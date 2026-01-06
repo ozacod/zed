@@ -19470,6 +19470,80 @@ impl Editor {
         self.fold_creases(creases, true, window, cx);
     }
 
+    pub fn fold_imports(
+        &mut self,
+        _: &actions::FoldImports,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.buffer.read(cx).snapshot(cx);
+
+        let mut import_ranges: Vec<Range<MultiBufferOffset>> = snapshot
+            .import_ranges(MultiBufferOffset(0)..snapshot.len())
+            .collect();
+
+        if import_ranges.is_empty() {
+            return;
+        }
+
+        import_ranges.sort_by_key(|range| range.start);
+
+        let mut grouped_ranges = Vec::new();
+        let mut current_group_start = import_ranges[0].start;
+        let mut current_group_end = import_ranges[0].end;
+
+        for range in import_ranges.into_iter().skip(1) {
+            let end_point = current_group_end.to_point(&snapshot);
+            let start_point = range.start.to_point(&snapshot);
+
+            let lines_between = start_point.row.saturating_sub(end_point.row);
+            if lines_between <= 1 {
+                current_group_end = range.end;
+            } else {
+                if current_group_end > current_group_start {
+                    grouped_ranges.push(current_group_start..current_group_end);
+                }
+                current_group_start = range.start;
+                current_group_end = range.end;
+            }
+        }
+
+        if current_group_end > current_group_start {
+            grouped_ranges.push(current_group_start..current_group_end);
+        }
+
+        let fold_placeholder = self.display_map.read(cx).fold_placeholder.clone();
+
+        let creases = grouped_ranges
+            .into_iter()
+            .filter_map(|range| {
+                let start_point = range.start.to_point(&snapshot);
+                let end_point = range.end.to_point(&snapshot);
+                let last_import_row = if end_point.column == 0 && end_point.row > 0 {
+                    end_point.row - 1
+                } else {
+                    end_point.row
+                };
+                if last_import_row > start_point.row {
+                    let fold_start = snapshot.point_to_offset(Point::new(
+                        start_point.row,
+                        snapshot.line_len(MultiBufferRow(start_point.row)),
+                    ));
+                    let fold_end = snapshot.point_to_offset(Point::new(
+                        last_import_row,
+                        snapshot.line_len(MultiBufferRow(last_import_row)),
+                    ));
+                    Some(fold_start..fold_end)
+                } else {
+                    None
+                }
+            })
+            .map(|range| Crease::simple(range, fold_placeholder.clone()))
+            .collect();
+
+        self.fold_creases(creases, true, window, cx);
+    }
+
     pub fn fold_recursive(
         &mut self,
         _: &actions::FoldRecursive,
@@ -25421,6 +25495,7 @@ impl EditorSnapshot {
         }
 
         is_foldable |= self.starts_indent(buffer_row);
+        is_foldable |= self.import_fold_range(buffer_row).is_some();
 
         if folded || (is_foldable && (row_contains_cursor || self.gutter_hovered)) {
             Some(

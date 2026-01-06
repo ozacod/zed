@@ -451,6 +451,7 @@ impl EditorElement {
         register_action(editor, window, Editor::fold_at_level_9);
         register_action(editor, window, Editor::fold_all);
         register_action(editor, window, Editor::fold_function_bodies);
+        register_action(editor, window, Editor::fold_imports);
         register_action(editor, window, Editor::fold_recursive);
         register_action(editor, window, Editor::toggle_fold);
         register_action(editor, window, Editor::toggle_fold_recursive);

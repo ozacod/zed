@@ -5882,6 +5882,30 @@ impl MultiBufferSnapshot {
             .flatten()
     }
 
+    /// Returns ranges of import statements in the buffer.
+    pub fn import_ranges<T: ToOffset>(
+        &self,
+        range: Range<T>,
+    ) -> impl Iterator<Item = Range<MultiBufferOffset>> + '_ {
+        let range = range.start.to_offset(self)..range.end.to_offset(self);
+        self.excerpt_containing(range.clone())
+            .map(|mut excerpt| {
+                excerpt
+                    .buffer()
+                    .import_ranges(excerpt.map_range_to_buffer(range))
+                    .filter_map(move |range| {
+                        let range = BufferOffset(range.start)..BufferOffset(range.end);
+                        if excerpt.contains_buffer_range(range.clone()) {
+                            Some(excerpt.map_range_from_buffer(range))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .into_iter()
+            .flatten()
+    }
+
     /// Returns bracket range pairs overlapping the given `range` or returns None if the `range` is
     /// not contained in a single excerpt
     pub fn bracket_ranges<T: ToOffset>(

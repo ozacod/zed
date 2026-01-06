@@ -508,6 +508,8 @@ actions!(
         FoldAtLevel9,
         /// Folds all function bodies in the editor.
         FoldFunctionBodies,
+        /// Folds all consecutive import statements into a single fold.
+        FoldImports,
         /// Folds the current code block and all its children.
         FoldRecursive,
         /// Folds the selected ranges.

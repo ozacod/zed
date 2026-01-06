@@ -249,4 +249,39 @@ mod tests {
             buffer
         });
     }
+
+    #[gpui::test]
+    async fn test_cpp_imports_query(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let test_settings = SettingsStore::test(cx);
+            cx.set_global(test_settings);
+        });
+        let language = crate::language("cpp", tree_sitter_cpp::LANGUAGE.into());
+
+        let buffer = cx.new(|cx| {
+            Buffer::local(
+                r#"
+                #include <iostream>
+                #include <vector>
+                #include "myheader.h"
+
+                int main() {
+                    return 0;
+                }
+                "#
+                .unindent(),
+                cx,
+            )
+            .with_language(language, cx)
+        });
+
+        cx.executor().run_until_parked();
+
+        buffer.read_with(cx, |buffer, _cx| {
+            let snapshot = buffer.snapshot();
+            let import_ranges: Vec<_> = snapshot.import_ranges(0..snapshot.len()).collect();
+
+            assert_eq!(import_ranges.len(), 3, "Should find 3 import statements");
+        });
+    }
 }

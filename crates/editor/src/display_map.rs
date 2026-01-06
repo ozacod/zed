@@ -232,6 +232,12 @@ impl DisplayMap {
             .update(cx, |map, cx| map.sync(tab_snapshot, edits, cx));
         let block_snapshot = self.block_map.read(wrap_snapshot, edits).snapshot;
 
+        let buffer_snapshot = block_snapshot.buffer_snapshot();
+        let mut import_ranges: Vec<Range<MultiBufferOffset>> = buffer_snapshot
+            .import_ranges(MultiBufferOffset(0)..buffer_snapshot.len())
+            .collect();
+        import_ranges.sort_by_key(|range| range.start);
+
         DisplaySnapshot {
             block_snapshot,
             diagnostics_max_severity: self.diagnostics_max_severity,
@@ -241,6 +247,7 @@ impl DisplayMap {
             clip_at_line_ends: self.clip_at_line_ends,
             masked: self.masked,
             fold_placeholder: self.fold_placeholder.clone(),
+            cached_import_ranges: Arc::new(import_ranges),
         }
     }
 
@@ -855,6 +862,7 @@ pub struct DisplaySnapshot {
     masked: bool,
     diagnostics_max_severity: DiagnosticSeverity,
     pub(crate) fold_placeholder: FoldPlaceholder,
+    cached_import_ranges: Arc<Vec<Range<MultiBufferOffset>>>,
 }
 
 impl DisplaySnapshot {
@@ -1406,6 +1414,62 @@ impl DisplaySnapshot {
             .unwrap_or(false)
     }
 
+    pub fn import_fold_range(&self, buffer_row: MultiBufferRow) -> Option<Range<Point>> {
+        let snapshot = self.buffer_snapshot();
+        let row_start = snapshot.point_to_offset(Point::new(buffer_row.0, 0));
+        let row_end = snapshot.point_to_offset(Point::new(
+            buffer_row.0,
+            snapshot.line_len(buffer_row),
+        ));
+
+        let import_ranges = &self.cached_import_ranges;
+
+        if import_ranges.is_empty() {
+            return None;
+        }
+
+        let first_import_idx = import_ranges
+            .iter()
+            .position(|range| range.start >= row_start && range.start <= row_end)?;
+
+        if first_import_idx > 0 {
+            let prev_import = &import_ranges[first_import_idx - 1];
+            let prev_end_point = snapshot.offset_to_point(prev_import.end);
+            if buffer_row.0.saturating_sub(prev_end_point.row) <= 1 {
+                return None;
+            }
+        }
+
+        let mut group_end = import_ranges[first_import_idx].end;
+        for import_range in import_ranges.iter().skip(first_import_idx + 1) {
+            let current_end_point = snapshot.offset_to_point(group_end);
+            let next_start_point = snapshot.offset_to_point(import_range.start);
+            if next_start_point.row.saturating_sub(current_end_point.row) <= 1 {
+                group_end = import_range.end;
+            } else {
+                break;
+            }
+        }
+
+        let start_point = Point::new(buffer_row.0, snapshot.line_len(buffer_row));
+        let group_end_point = snapshot.offset_to_point(group_end);
+        let last_import_row = if group_end_point.column == 0 && group_end_point.row > 0 {
+            group_end_point.row - 1
+        } else {
+            group_end_point.row
+        };
+        let end_point = Point::new(
+            last_import_row,
+            snapshot.line_len(MultiBufferRow(last_import_row)),
+        );
+
+        if end_point.row > start_point.row {
+            Some(start_point..end_point)
+        } else {
+            None
+        }
+    }
+
     #[instrument(skip_all)]
     pub fn crease_for_buffer_row(&self, buffer_row: MultiBufferRow) -> Option<Crease<Point>> {
         let start =
@@ -1482,6 +1546,16 @@ impl DisplaySnapshot {
 
             Some(Crease::Inline {
                 range: start..row_before_line_breaks,
+                placeholder: self.fold_placeholder.clone(),
+                render_toggle: None,
+                render_trailer: None,
+                metadata: None,
+            })
+        } else if let Some(import_range) = self.import_fold_range(buffer_row)
+            && !self.is_line_folded(buffer_row)
+        {
+            Some(Crease::Inline {
+                range: import_range,
                 placeholder: self.fold_placeholder.clone(),
                 render_toggle: None,
                 render_trailer: None,
@@ -2042,6 +2116,7 @@ pub mod tests {
                     wrap_width,
                     1,
                     1,
+                    FoldPlaceholder::test(),
                     FoldPlaceholder::test(),
                     DiagnosticSeverity::Warning,
                     cx,
