@@ -1494,29 +1494,25 @@ impl DisplaySnapshot {
         }
     }
 
-    pub fn syntax_crease_for_buffer_row(&self, buffer_row: MultiBufferRow) -> Option<Crease<Point>> {
+    pub fn syntax_crease_for_buffer_row(
+        &self,
+        buffer_row: MultiBufferRow,
+    ) -> Option<Crease<Point>> {
         let buffer_snapshot = self.buffer_snapshot();
-        let start = MultiBufferPoint::new(
-            buffer_row.0,
-            0,
-        )
-        .to_offset(buffer_snapshot);
-        let end = MultiBufferPoint::new(
-            buffer_row.0,
-            buffer_snapshot.line_len(buffer_row),
-        )
-        .to_offset(buffer_snapshot);
+        let start = MultiBufferPoint::new(buffer_row.0, 0).to_offset(buffer_snapshot);
+        let end = MultiBufferPoint::new(buffer_row.0, buffer_snapshot.line_len(buffer_row))
+            .to_offset(buffer_snapshot);
 
         let folds = buffer_snapshot.fold_ranges(start..end)?;
         for range in folds {
             let mut range_start = range.start.to_point(buffer_snapshot);
-            let mut range_end = range.end.to_point(buffer_snapshot);
+            let range_end = range.end.to_point(buffer_snapshot);
             if range_start.row == buffer_row.0 && range_end.row > range_start.row {
                 range_start.column = buffer_snapshot.line_len(buffer_row);
                 return Some(Crease::simple(
-                        range_start..range_end,
-                        self.fold_placeholder.clone(),
-                    ));
+                    range_start..range_end,
+                    self.fold_placeholder.clone(),
+                ));
             }
         }
 
