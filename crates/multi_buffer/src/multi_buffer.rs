@@ -5914,6 +5914,54 @@ impl MultiBufferSnapshot {
         )
     }
 
+    /// Returns fold ranges from folds.scm overlapping the given `range` or returns None if the `range` is
+    /// not contained in a single excerpt
+    pub fn fold_ranges<T: ToOffset>(
+        &self,
+        range: Range<T>,
+    ) -> Option<impl Iterator<Item = Range<MultiBufferOffset>> + '_> {
+        let range = range.start.to_offset(self)..range.end.to_offset(self);
+        let mut excerpt = self.excerpt_containing(range.clone())?;
+        Some(
+            excerpt
+                .buffer()
+                .fold_ranges(excerpt.map_range_to_buffer(range))
+                .filter_map(move |fold_range| {
+                    let fold_range = BufferOffset(fold_range.start)..BufferOffset(fold_range.end);
+                    if excerpt.contains_buffer_range(fold_range.clone()) {
+                        Some(excerpt.map_range_from_buffer(fold_range))
+                    } else {
+                        None
+                    }
+                }),
+        )
+    }
+
+    /// Returns the import block that starts on the given row, if any.
+    /// This is an O(1) lookup using pre-computed block boundaries.
+    /// Returns None if there's no import block starting on this row.
+    pub fn import_block_for_row(&self, row: MultiBufferRow) -> Option<Range<MultiBufferOffset>> {
+        let row_start = ToOffset::to_offset(&MultiBufferPoint::new(row.0, 0), self);
+        let row_end = ToOffset::to_offset(&MultiBufferPoint::new(row.0, self.line_len(row)), self);
+
+        let mut excerpt = self.excerpt_containing(row_start..row_end)?;
+        let buffer = excerpt.buffer();
+
+        // Use the efficient import_block_for_row from the underlying buffer
+        let buffer_range = excerpt.map_range_to_buffer(row_start..row_end);
+        let buffer_row = buffer.offset_to_point(buffer_range.start.0).row;
+
+        let import_block = buffer.import_block_for_row(buffer_row)?;
+        let fold_range =
+            BufferOffset(import_block.range.start)..BufferOffset(import_block.range.end);
+
+        if excerpt.contains_buffer_range(fold_range.clone()) {
+            Some(excerpt.map_range_from_buffer(fold_range))
+        } else {
+            None
+        }
+    }
+
     pub fn redacted_ranges<'a, T: ToOffset>(
         &'a self,
         range: Range<T>,

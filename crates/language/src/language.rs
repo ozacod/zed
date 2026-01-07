@@ -1330,6 +1330,7 @@ pub struct Grammar {
     pub(crate) override_config: Option<OverrideConfig>,
     pub(crate) debug_variables_config: Option<DebugVariablesConfig>,
     pub(crate) imports_config: Option<ImportsConfig>,
+    pub(crate) folds_config: Option<FoldsConfig>,
     pub(crate) highlight_map: Mutex<HighlightMap>,
 }
 
@@ -1484,6 +1485,11 @@ pub struct ImportsConfig {
     pub alias_ix: Option<u32>,
 }
 
+pub struct FoldsConfig {
+    pub query: Query,
+    pub fold_ix: u32,
+}
+
 impl Language {
     pub fn new(config: LanguageConfig, ts_language: Option<tree_sitter::Language>) -> Self {
         Self::new_with_id(LanguageId::new(), config, ts_language)
@@ -1516,6 +1522,7 @@ impl Language {
                     error_query: Query::new(&ts_language, "(ERROR) @error").ok(),
                     debug_variables_config: None,
                     imports_config: None,
+                    folds_config: None,
                     ts_language,
                     highlight_map: Default::default(),
                 })
@@ -1596,6 +1603,11 @@ impl Language {
             self = self
                 .with_imports_query(query.as_ref())
                 .context("Error loading imports query")?;
+        }
+        if let Some(query) = queries.folds {
+            self = self
+                .with_folds_query(query.as_ref())
+                .context("Error loading folds query")?;
         }
         Ok(self)
     }
@@ -1768,6 +1780,22 @@ impl Language {
                 wildcard_ix,
                 alias_ix,
             });
+        }
+        return Ok(self);
+    }
+
+    pub fn with_folds_query(mut self, source: &str) -> Result<Self> {
+        let query = Query::new(&self.expect_grammar()?.ts_language, source)?;
+
+        let mut fold_ix = 0;
+        if populate_capture_indices(
+            &query,
+            &self.config.name,
+            "folds",
+            &[],
+            &mut [Capture::Required("fold", &mut fold_ix)],
+        ) {
+            self.grammar_mut()?.folds_config = Some(FoldsConfig { query, fold_ix });
         }
         return Ok(self);
     }
@@ -2349,6 +2377,10 @@ impl Grammar {
     pub fn imports_config(&self) -> Option<&ImportsConfig> {
         self.imports_config.as_ref()
     }
+
+    pub fn folds_config(&self) -> Option<&FoldsConfig> {
+        self.folds_config.as_ref()
+    }
 }
 
 impl CodeLabelBuilder {
@@ -2753,6 +2785,7 @@ pub fn rust_lang() -> Arc<Language> {
         text_objects: Some(Cow::from(include_str!(
             "../../languages/src/rust/textobjects.scm"
         ))),
+
         highlights: Some(Cow::from(include_str!(
             "../../languages/src/rust/highlights.scm"
         ))),
@@ -2772,6 +2805,7 @@ pub fn rust_lang() -> Arc<Language> {
         imports: Some(Cow::from(include_str!(
             "../../languages/src/rust/imports.scm"
         ))),
+        ..Default::default()
     })
     .expect("Could not parse queries");
     Arc::new(language)

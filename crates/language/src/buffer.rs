@@ -149,6 +149,19 @@ pub struct Buffer {
 pub struct TreeSitterData {
     chunks: RowChunks,
     brackets_by_chunks: Mutex<Vec<Option<Vec<BracketMatch<usize>>>>>,
+    folds_by_chunks: Mutex<Vec<Option<Vec<Range<usize>>>>>,
+    /// Pre-computed import block boundaries. Each block has a start row and the full block range.
+    /// This allows O(1) lookup for "what import block does this row belong to".
+    import_blocks_by_chunks: Mutex<Vec<Option<Vec<ImportBlock>>>>,
+}
+
+/// A pre-computed import block with its start row and full range.
+#[derive(Debug, Clone)]
+pub struct ImportBlock {
+    /// The row where this import block starts
+    pub start_row: u32,
+    /// The full range of the import block (from first import start to last import end)
+    pub range: Range<usize>,
 }
 
 const MAX_ROWS_IN_A_CHUNK: u32 = 50;
@@ -160,13 +173,24 @@ impl TreeSitterData {
         self.brackets_by_chunks
             .get_mut()
             .resize(self.chunks.len(), None);
+        self.folds_by_chunks.get_mut().clear();
+        self.folds_by_chunks
+            .get_mut()
+            .resize(self.chunks.len(), None);
+        self.import_blocks_by_chunks.get_mut().clear();
+        self.import_blocks_by_chunks
+            .get_mut()
+            .resize(self.chunks.len(), None);
     }
 
     fn new(snapshot: text::BufferSnapshot) -> Self {
         let chunks = RowChunks::new(snapshot, MAX_ROWS_IN_A_CHUNK);
+        let chunk_count = chunks.len();
         Self {
-            brackets_by_chunks: Mutex::new(vec![None; chunks.len()]),
+            brackets_by_chunks: Mutex::new(vec![None; chunk_count]),
             chunks,
+            folds_by_chunks: Mutex::new(vec![None; chunk_count]),
+            import_blocks_by_chunks: Mutex::new(vec![None; chunk_count]),
         }
     }
 
@@ -4566,6 +4590,213 @@ impl BufferSnapshot {
         let range = range.start.to_previous_offset(self)..range.end.to_next_offset(self);
         self.all_bracket_ranges(range)
             .filter(|pair| !pair.newline_only)
+    }
+
+    /// Ensures fold ranges are cached for the given chunk. Populates the cache if needed.
+    fn ensure_fold_ranges_cached(&self, chunk: row_chunk::RowChunk) {
+        {
+            let cache = self.tree_sitter_data.folds_by_chunks.lock();
+            if cache[chunk.id].is_some() {
+                return;
+            }
+        }
+
+        let chunk_range = chunk.anchor_range().to_offset(&self);
+        let mut fold_ranges = Vec::new();
+
+        let mut matches = self.syntax.matches_with_options(
+            chunk_range.clone(),
+            &self.text,
+            TreeSitterOptions {
+                max_bytes_to_query: Some(MAX_BYTES_TO_QUERY),
+                max_start_depth: None,
+            },
+            |grammar| grammar.folds_config.as_ref().map(|c| &c.query),
+        );
+        let configs = matches
+            .grammars()
+            .iter()
+            .map(|grammar| grammar.folds_config.as_ref())
+            .collect::<Vec<_>>();
+
+        while let Some(mat) = matches.peek() {
+            let config = match configs.get(mat.grammar_index).and_then(|c| *c) {
+                Some(c) => c,
+                None => {
+                    matches.advance();
+                    continue;
+                }
+            };
+
+            for capture in mat.captures {
+                if capture.index == config.fold_ix {
+                    let fold_range = capture.node.byte_range();
+                    if fold_range.overlaps(&chunk_range) {
+                        fold_ranges.push(fold_range);
+                    }
+                }
+            }
+
+            matches.advance();
+        }
+
+        fold_ranges.sort_by_key(|r| (r.start, r.end));
+        fold_ranges.dedup();
+
+        if let empty_slot @ None = &mut self.tree_sitter_data.folds_by_chunks.lock()[chunk.id] {
+            *empty_slot = Some(fold_ranges);
+        }
+    }
+
+    /// Returns fold ranges from folds.scm overlapping the given range.
+    pub fn fold_ranges<T: ToOffset>(
+        &self,
+        range: Range<T>,
+    ) -> impl Iterator<Item = Range<usize>> + '_ {
+        let range = range.start.to_offset(self)..range.end.to_offset(self);
+        let chunks: Vec<_> = self
+            .tree_sitter_data
+            .chunks
+            .applicable_chunks(&[range.to_point(self)])
+            .collect();
+
+        for chunk in &chunks {
+            self.ensure_fold_ranges_cached(*chunk);
+        }
+
+        chunks
+            .into_iter()
+            .flat_map(move |chunk| {
+                let cache = self.tree_sitter_data.folds_by_chunks.lock();
+                cache[chunk.id].clone().unwrap_or_default()
+            })
+            .filter(move |fold_range| fold_range.overlaps(&range))
+    }
+
+    /// Ensures import blocks are cached for the given chunk. Populates the cache if needed.
+    fn ensure_import_blocks_cached(&self, chunk: row_chunk::RowChunk) {
+        {
+            let cache = self.tree_sitter_data.import_blocks_by_chunks.lock();
+            if cache[chunk.id].is_some() {
+                return;
+            }
+        }
+
+        let chunk_range = chunk.anchor_range().to_offset(&self);
+        let mut import_ranges = Vec::new();
+
+        let mut matches = self.syntax.matches_with_options(
+            chunk_range.clone(),
+            &self.text,
+            TreeSitterOptions {
+                max_bytes_to_query: Some(MAX_BYTES_TO_QUERY),
+                max_start_depth: None,
+            },
+            |grammar| grammar.imports_config.as_ref().map(|c| &c.query),
+        );
+        let configs = matches
+            .grammars()
+            .iter()
+            .map(|grammar| grammar.imports_config.as_ref())
+            .collect::<Vec<_>>();
+
+        while let Some(mat) = matches.peek() {
+            let config = match configs.get(mat.grammar_index).and_then(|c| *c) {
+                Some(c) => c,
+                None => {
+                    matches.advance();
+                    continue;
+                }
+            };
+
+            for capture in mat.captures {
+                if capture.index == config.import_ix {
+                    let import_range = capture.node.byte_range();
+                    if import_range.overlaps(&chunk_range) {
+                        import_ranges.push(import_range);
+                    }
+                }
+            }
+
+            matches.advance();
+        }
+
+        import_ranges.sort_by_key(|r| (r.start, r.end));
+        import_ranges.dedup();
+
+        // Pre-compute import blocks (grouped imports with 1 blank line tolerance)
+        let mut import_blocks = Vec::new();
+        if !import_ranges.is_empty() {
+            let mut current_block_start = import_ranges[0].start;
+            let mut current_block_end = import_ranges[0].end;
+            let mut block_start_row = self.offset_to_point(current_block_start).row;
+            let mut last_end_row = self.offset_to_point(current_block_end).row;
+
+            for import in import_ranges.iter().skip(1) {
+                let start_row = self.offset_to_point(import.start).row;
+                // Allow up to 1 blank line between imports (row diff <= 2)
+                if start_row <= last_end_row + 2 {
+                    current_block_end = import.end;
+                    last_end_row = self.offset_to_point(current_block_end).row;
+                } else {
+                    // End current block and start new one
+                    if last_end_row > block_start_row {
+                        import_blocks.push(ImportBlock {
+                            start_row: block_start_row,
+                            range: current_block_start..current_block_end,
+                        });
+                    }
+                    current_block_start = import.start;
+                    current_block_end = import.end;
+                    block_start_row = self.offset_to_point(current_block_start).row;
+                    last_end_row = self.offset_to_point(current_block_end).row;
+                }
+            }
+
+            // Don't forget the last block
+            if last_end_row > block_start_row {
+                import_blocks.push(ImportBlock {
+                    start_row: block_start_row,
+                    range: current_block_start..current_block_end,
+                });
+            }
+        }
+
+        if let empty_slot @ None =
+            &mut self.tree_sitter_data.import_blocks_by_chunks.lock()[chunk.id]
+        {
+            *empty_slot = Some(import_blocks);
+        }
+    }
+
+    /// Returns the import block that starts on the given row, if any.
+    /// This is an O(1) lookup using pre-computed block boundaries.
+    /// Returns None if there's no import block starting on this row.
+    pub fn import_block_for_row(&self, row: u32) -> Option<ImportBlock> {
+        let row_start = self.point_to_offset(Point::new(row, 0));
+        let row_end = self.point_to_offset(Point::new(row, self.line_len(row)));
+        let range = row_start..row_end;
+
+        let chunks: Vec<_> = self
+            .tree_sitter_data
+            .chunks
+            .applicable_chunks(&[range.to_point(self)])
+            .collect();
+
+        for chunk in &chunks {
+            self.ensure_import_blocks_cached(*chunk);
+        }
+
+        for chunk in chunks {
+            let cache = self.tree_sitter_data.import_blocks_by_chunks.lock();
+            if let Some(blocks) = &cache[chunk.id] {
+                if let Some(block) = blocks.iter().find(|b| b.start_row == row) {
+                    return Some(block.clone());
+                }
+            }
+        }
+
+        None
     }
 
     pub fn debug_variables_query<T: ToOffset>(

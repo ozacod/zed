@@ -45,6 +45,8 @@ mod code_completion_tests;
 mod edit_prediction_tests;
 #[cfg(test)]
 mod editor_tests;
+#[cfg(test)]
+mod folding_tests;
 mod signature_help;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
@@ -25428,6 +25430,11 @@ impl EditorSnapshot {
                 }
             }
         }
+
+        is_foldable |= self
+            .display_snapshot
+            .syntax_crease_for_buffer_row(buffer_row)
+            .is_some();
 
         is_foldable |= self.starts_indent(buffer_row);
 

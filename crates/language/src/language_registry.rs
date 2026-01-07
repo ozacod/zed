@@ -235,6 +235,7 @@ pub const QUERY_FILENAME_PREFIXES: &[(
     ("debugger", |q| &mut q.debugger),
     ("textobjects", |q| &mut q.text_objects),
     ("imports", |q| &mut q.imports),
+    ("folds", |q| &mut q.folds),
 ];
 
 /// Tree-sitter language queries for a given language.
@@ -251,6 +252,7 @@ pub struct LanguageQueries {
     pub text_objects: Option<Cow<'static, str>>,
     pub debugger: Option<Cow<'static, str>>,
     pub imports: Option<Cow<'static, str>>,
+    pub folds: Option<Cow<'static, str>>,
 }
 
 #[derive(Clone, Default)]
