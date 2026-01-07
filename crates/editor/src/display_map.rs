@@ -1507,8 +1507,19 @@ impl DisplaySnapshot {
         )
         .to_offset(buffer_snapshot);
 
+        let folds = buffer_snapshot.fold_ranges(start..end)?;
+        for range in folds {
+            let mut range_start = range.start.to_point(buffer_snapshot);
+            let mut range_end = range.end.to_point(buffer_snapshot);
+            if range_start.row == buffer_row.0 && range_end.row > range_start.row {
+                range_start.column = buffer_snapshot.line_len(buffer_row);
+                return Some(Crease::simple(
+                        range_start..range_end,
+                        self.fold_placeholder.clone(),
+                    ));
+            }
+        }
 
-        // Check if the current row starts an import block using O(1) pre-computed lookup
         if let Some(block_range) = buffer_snapshot.import_block_for_row(buffer_row) {
             let range_end = block_range.end.to_point(buffer_snapshot);
             let range_start = Point::new(buffer_row.0, buffer_snapshot.line_len(buffer_row));
@@ -1518,21 +1529,6 @@ impl DisplaySnapshot {
             ));
         }
 
-        let folds = buffer_snapshot.fold_ranges(start..end)?;
-        for range in folds {
-            let mut range_start = range.start.to_point(buffer_snapshot);
-            if range_start.row == buffer_row.0 {
-                let range_end = range.end.to_point(buffer_snapshot);
-                if range_end.row > range_start.row {
-                    range_start.column = buffer_snapshot.line_len(buffer_row);
-                }
-
-                return Some(Crease::simple(
-                    range_start..range_end,
-                    self.fold_placeholder.clone(),
-                ));
-            }
-        }
         None
     }
 
