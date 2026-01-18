@@ -2,15 +2,16 @@ mod image_info;
 mod image_viewer_settings;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use editor::items::entry_git_aware_label_color;
 use file_icons::FileIcons;
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyContext, ObjectFit, ParentElement, Render, ScrollHandle,
-    ScrollWheelEvent, Styled, Task, WeakEntity, Window, actions, canvas, div, fill, img,
-    opaque_grey, point, px, size,
+    AnyElement, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyContext, MouseDownEvent, ObjectFit, ParentElement, Pixels,
+    Render, RenderImage, ScrollHandle, ScrollWheelEvent, Styled, Task, WeakEntity, Window, actions,
+    canvas, div, fill, img, opaque_grey, point, px, size,
 };
 use language::File as _;
 use persistence::IMAGE_VIEWER;
@@ -31,7 +32,17 @@ const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 100.0;
 const ZOOM_STEP: f32 = 0.1;
 
-actions!(image_viewer, [ZoomIn, ZoomOut, ResetZoom, ZoomToActualSize]);
+actions!(
+    image_viewer,
+    [
+        ZoomIn,
+        ZoomOut,
+        ResetZoom,
+        ZoomToActualSize,
+        ToggleEyedropper,
+        CopyColorToClipboard
+    ]
+);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ZoomMode {
@@ -46,6 +57,33 @@ pub struct ImageView {
     zoom_level: f32,
     zoom_mode: ZoomMode,
     scroll_handle: ScrollHandle,
+    eyedropper_mode: bool,
+    picked_color: Option<PickedColor>,
+}
+
+#[derive(Clone, Copy)]
+struct PickedColor {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+impl PickedColor {
+    fn to_hex(&self) -> String {
+        if self.a == 255 {
+            format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
+        } else {
+            format!("#{:02X}{:02X}{:02X}{:02X}", self.r, self.g, self.b, self.a)
+        }
+    }
+
+    fn to_gpui_color(&self) -> gpui::Rgba {
+        gpui::rgba(
+            ((self.r as u32) << 24 | (self.g as u32) << 16 | (self.b as u32) << 8 | (self.a as u32))
+                as u32,
+        )
+    }
 }
 
 impl ImageView {
@@ -72,6 +110,8 @@ impl ImageView {
             zoom_level: 1.0,
             zoom_mode: ZoomMode::Fit,
             scroll_handle: ScrollHandle::new(),
+            eyedropper_mode: false,
+            picked_color: None,
         }
     }
 
@@ -148,6 +188,69 @@ impl ImageView {
             self.adjust_zoom_center(old_zoom, new_zoom, window, cx);
             self.zoom_level = new_zoom;
             cx.notify();
+        }
+    }
+
+    fn toggle_eyedropper(
+        &mut self,
+        _: &ToggleEyedropper,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.eyedropper_mode = !self.eyedropper_mode;
+        cx.notify();
+    }
+
+    fn copy_color_to_clipboard(
+        &mut self,
+        _: &CopyColorToClipboard,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(color) = self.picked_color {
+            let hex = color.to_hex();
+            cx.write_to_clipboard(ClipboardItem::new_string(hex));
+        }
+    }
+
+    fn pick_color_at_position(
+        &mut self,
+        position: gpui::Point<Pixels>,
+        render_image: &Arc<RenderImage>,
+        image_bounds: Bounds<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let image_size = render_image.size(0);
+        let image_width = image_size.width.0 as f32;
+        let image_height = image_size.height.0 as f32;
+
+        let rel_x: f32 = (position.x - image_bounds.origin.x).into();
+        let rel_y: f32 = (position.y - image_bounds.origin.y).into();
+        let bounds_width: f32 = image_bounds.size.width.into();
+        let bounds_height: f32 = image_bounds.size.height.into();
+
+        let pixel_x = (rel_x / bounds_width * image_width) as i32;
+        let pixel_y = (rel_y / bounds_height * image_height) as i32;
+
+        if pixel_x >= 0
+            && pixel_x < image_width as i32
+            && pixel_y >= 0
+            && pixel_y < image_height as i32
+        {
+            if let Some(bytes) = render_image.as_bytes(0) {
+                let stride = image_width as usize * 4;
+                let offset = (pixel_y as usize * stride) + (pixel_x as usize * 4);
+
+                if offset + 3 < bytes.len() {
+                    self.picked_color = Some(PickedColor {
+                        r: bytes[offset],
+                        g: bytes[offset + 1],
+                        b: bytes[offset + 2],
+                        a: bytes[offset + 3],
+                    });
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -308,6 +411,8 @@ impl Item for ImageView {
             zoom_level: 1.0,
             zoom_mode: ZoomMode::Fit,
             scroll_handle: ScrollHandle::new(),
+            eyedropper_mode: false,
+            picked_color: None,
         })))
     }
 
@@ -485,6 +590,8 @@ impl Render for ImageView {
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::reset_zoom))
             .on_action(cx.listener(Self::zoom_to_actual_size))
+            .on_action(cx.listener(Self::toggle_eyedropper))
+            .on_action(cx.listener(Self::copy_color_to_clipboard))
             .child(
                 h_flex()
                     .gap_2()
@@ -529,7 +636,46 @@ impl Render for ImageView {
                             .tooltip(move |_window, cx| {
                                 Tooltip::for_action("Zoom to Actual Size", &ZoomToActualSize, cx)
                             }),
-                    ),
+                    )
+                    .child(div().w_px().h_4().bg(cx.theme().styles.colors.border))
+                    .child({
+                        let eyedropper_mode = self.eyedropper_mode;
+                        IconButton::new("eyedropper", IconName::Crosshair)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_eyedropper(&ToggleEyedropper, window, cx)
+                            }))
+                            .toggle_state(eyedropper_mode)
+                            .tooltip(move |_window, cx| {
+                                Tooltip::for_action("Color Picker", &ToggleEyedropper, cx)
+                            })
+                    })
+                    .when_some(self.picked_color, |el, color| {
+                        el.child(
+                            div()
+                                .id("color-swatch")
+                                .w_6()
+                                .h_6()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(cx.theme().styles.colors.border)
+                                .bg(color.to_gpui_color()),
+                        )
+                        .child(
+                            Label::new(color.to_hex())
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            IconButton::new("copy_color", IconName::Copy)
+                                .icon_size(IconSize::Small)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.copy_color_to_clipboard(&CopyColorToClipboard, window, cx)
+                                }))
+                                .tooltip(move |_window, cx| {
+                                    Tooltip::for_action("Copy Color", &CopyColorToClipboard, cx)
+                                }),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -582,12 +728,80 @@ impl Render for ImageView {
                             .size_full()
                             .min_w(scaled_width)
                             .min_h(scaled_height)
-                            .child(
+                            .child({
+                                let eyedropper_mode = self.eyedropper_mode;
+                                let image_item = self.image_item.clone();
                                 div()
+                                    .id("image-container")
                                     .flex_shrink_0()
                                     .relative()
                                     .w(scaled_width)
                                     .h(scaled_height)
+                                    .when(eyedropper_mode, |el| el.cursor_crosshair())
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(
+                                            move |this, event: &MouseDownEvent, window, cx| {
+                                                if this.eyedropper_mode {
+                                                    let image_data =
+                                                        image_item.read(cx).image.clone();
+                                                    if let Some(render_image) =
+                                                        image_data.use_render_image(window, cx)
+                                                    {
+                                                        let image_size = render_image.size(0);
+                                                        let img_width =
+                                                            px(image_size.width.0 as f32);
+                                                        let img_height =
+                                                            px(image_size.height.0 as f32);
+
+                                                        let zoom =
+                                                            if this.zoom_mode == ZoomMode::Fit {
+                                                                this.calculate_fit_zoom(window, cx)
+                                                            } else {
+                                                                this.zoom_level
+                                                            };
+
+                                                        let scaled_w = img_width * zoom;
+                                                        let scaled_h = img_height * zoom;
+
+                                                        let scroll_bounds =
+                                                            this.scroll_handle.bounds();
+                                                        let scroll_offset =
+                                                            this.scroll_handle.offset();
+
+                                                        let content_center_x =
+                                                            (scroll_bounds.size.width - scaled_w)
+                                                                .max(px(0.))
+                                                                / 2.0;
+                                                        let content_center_y =
+                                                            (scroll_bounds.size.height - scaled_h)
+                                                                .max(px(0.))
+                                                                / 2.0;
+
+                                                        let image_origin_x = scroll_bounds.origin.x
+                                                            + content_center_x
+                                                            - scroll_offset.x;
+                                                        let image_origin_y = scroll_bounds.origin.y
+                                                            + content_center_y
+                                                            - scroll_offset.y;
+
+                                                        let image_bounds = Bounds::new(
+                                                            point(image_origin_x, image_origin_y),
+                                                            size(scaled_w, scaled_h),
+                                                        );
+
+                                                        this.pick_color_at_position(
+                                                            event.position,
+                                                            &render_image,
+                                                            image_bounds,
+                                                            cx,
+                                                        );
+                                                    }
+                                                    cx.stop_propagation();
+                                                }
+                                            },
+                                        ),
+                                    )
                                     .child(
                                         canvas(|_, _, _| (), checkered_background)
                                             .border_2()
@@ -602,8 +816,8 @@ impl Render for ImageView {
                                             .object_fit(ObjectFit::Fill)
                                             .size_full()
                                             .id("img"),
-                                    ),
-                            ),
+                                    )
+                            }),
                     ),
             )
             .custom_scrollbars(
