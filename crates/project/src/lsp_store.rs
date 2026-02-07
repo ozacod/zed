@@ -8826,6 +8826,38 @@ impl LspStore {
                 .await
                 .context("querying for inlay hints")?
             }
+            Request::GetCallHierarchyIncomingCalls(get_call_hierarchy_incoming_calls) => {
+                let position = get_call_hierarchy_incoming_calls
+                    .position
+                    .clone()
+                    .and_then(deserialize_anchor);
+                Self::query_lsp_locally::<GetCallHierarchyIncomingCalls>(
+                    lsp_store,
+                    server_id,
+                    sender_id,
+                    lsp_request_id,
+                    get_call_hierarchy_incoming_calls,
+                    position,
+                    &mut cx,
+                )
+                .await?;
+            }
+            Request::GetCallHierarchyOutgoingCalls(get_call_hierarchy_outgoing_calls) => {
+                let position = get_call_hierarchy_outgoing_calls
+                    .position
+                    .clone()
+                    .and_then(deserialize_anchor);
+                Self::query_lsp_locally::<GetCallHierarchyOutgoingCalls>(
+                    lsp_store,
+                    server_id,
+                    sender_id,
+                    lsp_request_id,
+                    get_call_hierarchy_outgoing_calls,
+                    position,
+                    &mut cx,
+                )
+                .await?;
+            }
             //////////////////////////////
             // Below are LSP queries that need to fetch more data,
             // hence cannot just proxy the request to language server with `query_lsp_locally`.

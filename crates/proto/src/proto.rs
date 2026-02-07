@@ -229,6 +229,10 @@ messages!(
     (GetDocumentColorResponse, Background),
     (GetColorPresentation, Background),
     (GetColorPresentationResponse, Background),
+    (GetCallHierarchyIncomingCalls, Background),
+    (GetCallHierarchyIncomingCallsResponse, Background),
+    (GetCallHierarchyOutgoingCalls, Background),
+    (GetCallHierarchyOutgoingCallsResponse, Background),
     (GetFoldingRanges, Background),
     (GetFoldingRangesResponse, Background),
     (RefreshCodeLens, Background),
@@ -452,6 +456,8 @@ request_messages!(
     ),
     (ResolveInlayHint, ResolveInlayHintResponse),
     (GetDocumentColor, GetDocumentColorResponse),
+    (GetCallHierarchyIncomingCalls, GetCallHierarchyIncomingCallsResponse),
+    (GetCallHierarchyOutgoingCalls, GetCallHierarchyOutgoingCallsResponse),
     (GetFoldingRanges, GetFoldingRangesResponse),
     (GetColorPresentation, GetColorPresentationResponse),
     (RespondToChannelInvite, Ack),
@@ -571,7 +577,9 @@ lsp_messages!(
     (GetTypeDefinition, GetTypeDefinitionResponse, true),
     (GetImplementation, GetImplementationResponse, true),
     (InlayHints, InlayHintsResponse, false),
-    (SemanticTokens, SemanticTokensResponse, true)
+    (SemanticTokens, SemanticTokensResponse, true),
+    (GetCallHierarchyIncomingCalls, GetCallHierarchyIncomingCallsResponse, true),
+    (GetCallHierarchyOutgoingCalls, GetCallHierarchyOutgoingCallsResponse, true)
 );
 
 entity_messages!(
@@ -593,6 +601,8 @@ entity_messages!(
     CreateFileForPeer,
     CreateImageForPeer,
     CreateProjectEntry,
+    GetCallHierarchyIncomingCalls,
+    GetCallHierarchyOutgoingCalls,
     GetDocumentColor,
     GetFoldingRanges,
     DeleteProjectEntry,
@@ -928,6 +938,12 @@ impl LspQuery {
             Some(lsp_query::Request::GetFoldingRanges(_)) => ("GetFoldingRanges", false),
             Some(lsp_query::Request::InlayHints(_)) => ("InlayHints", false),
             Some(lsp_query::Request::SemanticTokens(_)) => ("SemanticTokens", false),
+            Some(lsp_query::Request::GetCallHierarchyIncomingCalls(_)) => {
+                ("GetCallHierarchyIncomingCalls", false)
+            }
+            Some(lsp_query::Request::GetCallHierarchyOutgoingCalls(_)) => {
+                ("GetCallHierarchyOutgoingCalls", false)
+            }
             None => ("<unknown>", true),
         }
     }
