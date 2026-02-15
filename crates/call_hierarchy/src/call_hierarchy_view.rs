@@ -883,7 +883,7 @@ impl Render for CallHierarchyView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut key_context = KeyContext::new_with_defaults();
         key_context.add("CallHierarchyView");
-        key_context.add("CallHierarchyPanel");
+        key_context.add("CallHierarchy");
 
         v_flex()
             .key_context(key_context)

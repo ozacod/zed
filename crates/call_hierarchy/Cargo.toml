@@ -9,7 +9,7 @@ license = "GPL-3.0-or-later"
 workspace = true
 
 [lib]
-path = "src/call_hierarchy_panel.rs"
+path = "src/call_hierarchy_view.rs"
 doctest = false
 
 [dependencies]
