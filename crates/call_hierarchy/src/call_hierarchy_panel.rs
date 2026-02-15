@@ -16,7 +16,7 @@ use ui::{
     prelude::*,
 };
 use workspace::item::{Item, ItemHandle};
-use workspace::{OpenOptions, SplitDirection, Workspace};
+use workspace::{Pane, SplitDirection, Workspace};
 use zed_actions::call_hierarchy::{
     ShowCallHierarchy, ShowIncomingCalls, ShowOutgoingCalls, ToggleFocus,
 };
@@ -42,6 +42,7 @@ enum CallDirection {
 pub struct CallHierarchyView {
     project: Entity<Project>,
     workspace: WeakEntity<Workspace>,
+    navigation_pane: Option<WeakEntity<Pane>>,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
 
@@ -70,19 +71,31 @@ pub fn init(cx: &mut App) {
             open_or_focus_call_hierarchy_view(workspace, window, cx);
         });
         workspace.register_action(|workspace, _: &ShowCallHierarchy, window, cx| {
+            let navigation_pane = workspace.active_pane().downgrade();
             let active_editor = workspace
                 .active_item(cx)
                 .and_then(|item| item.act_as::<Editor>(cx));
-            let view = open_or_focus_call_hierarchy_view(workspace, window, cx);
+            let view = open_or_focus_call_hierarchy_view_in_right_pane(
+                workspace,
+                navigation_pane,
+                window,
+                cx,
+            );
             if let Some(active_editor) = active_editor {
                 trigger_call_hierarchy(workspace, active_editor, view, window, cx);
             }
         });
         workspace.register_action(|workspace, _: &ShowIncomingCalls, window, cx| {
+            let navigation_pane = workspace.active_pane().downgrade();
             let active_editor = workspace
                 .active_item(cx)
                 .and_then(|item| item.act_as::<Editor>(cx));
-            let view = open_or_focus_call_hierarchy_view(workspace, window, cx);
+            let view = open_or_focus_call_hierarchy_view_in_right_pane(
+                workspace,
+                navigation_pane,
+                window,
+                cx,
+            );
             view.update(cx, |view, _cx| {
                 view.direction = CallDirection::Incoming;
             });
@@ -91,10 +104,16 @@ pub fn init(cx: &mut App) {
             }
         });
         workspace.register_action(|workspace, _: &ShowOutgoingCalls, window, cx| {
+            let navigation_pane = workspace.active_pane().downgrade();
             let active_editor = workspace
                 .active_item(cx)
                 .and_then(|item| item.act_as::<Editor>(cx));
-            let view = open_or_focus_call_hierarchy_view(workspace, window, cx);
+            let view = open_or_focus_call_hierarchy_view_in_right_pane(
+                workspace,
+                navigation_pane,
+                window,
+                cx,
+            );
             view.update(cx, |view, _cx| {
                 view.direction = CallDirection::Outgoing;
             });
@@ -121,7 +140,7 @@ fn open_or_focus_call_hierarchy_view(
 
     let workspace_handle = workspace.weak_handle();
     let project = workspace.project().clone();
-    let view = cx.new(|cx| CallHierarchyView::new(project, workspace_handle, cx));
+    let view = cx.new(|cx| CallHierarchyView::new(project, workspace_handle, None, cx));
     match workspace.find_pane_in_direction(SplitDirection::Right, cx) {
         Some(right_pane) => {
             workspace.add_item(right_pane, view.boxed_clone(), None, true, true, window, cx);
@@ -130,6 +149,44 @@ fn open_or_focus_call_hierarchy_view(
             workspace.split_item(SplitDirection::Right, view.boxed_clone(), window, cx);
         }
     }
+    view
+}
+
+fn open_or_focus_call_hierarchy_view_in_right_pane(
+    workspace: &mut Workspace,
+    navigation_pane: WeakEntity<Pane>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Entity<CallHierarchyView> {
+    if let Some(right_pane) = workspace.find_pane_in_direction(SplitDirection::Right, cx) {
+        if let Some(existing) = right_pane
+            .read(cx)
+            .items_of_type::<CallHierarchyView>()
+            .last()
+        {
+            existing.update(cx, |view, _cx| {
+                view.navigation_pane = Some(navigation_pane.clone());
+            });
+            let is_active = workspace
+                .active_item(cx)
+                .is_some_and(|item| item.item_id() == existing.entity_id());
+            workspace.activate_item(&existing, true, !is_active, window, cx);
+            return existing;
+        }
+
+        let workspace_handle = workspace.weak_handle();
+        let project = workspace.project().clone();
+        let view = cx
+            .new(|cx| CallHierarchyView::new(project, workspace_handle, Some(navigation_pane), cx));
+        workspace.add_item(right_pane, view.boxed_clone(), None, true, true, window, cx);
+        return view;
+    }
+
+    let workspace_handle = workspace.weak_handle();
+    let project = workspace.project().clone();
+    let view =
+        cx.new(|cx| CallHierarchyView::new(project, workspace_handle, Some(navigation_pane), cx));
+    workspace.split_item(SplitDirection::Right, view.boxed_clone(), window, cx);
     view
 }
 
@@ -151,6 +208,11 @@ fn trigger_call_hierarchy(
     let Some((buffer, position, _range)) = result else {
         return;
     };
+    let source_file_path = buffer
+        .read(cx)
+        .file()
+        .and_then(|file| file.as_local())
+        .map(|file| file.abs_path(cx).to_path_buf());
 
     let project = workspace.project().clone();
     let direction = view.read(cx).direction;
@@ -164,7 +226,7 @@ fn trigger_call_hierarchy(
     let view_clone = view.clone();
     cx.spawn_in(window, async move |_workspace, cx| {
         let items = prepare_task.await?;
-        let Some(root_item) = items.into_iter().next() else {
+        let Some(root_item) = select_call_hierarchy_item(items, position, source_file_path) else {
             view_clone.update_in(cx, |view, _window, cx| {
                 view.clear_results(cx);
             })?;
@@ -184,11 +246,13 @@ impl CallHierarchyView {
     fn new(
         project: Entity<Project>,
         workspace: WeakEntity<Workspace>,
+        navigation_pane: Option<WeakEntity<Pane>>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             project,
             workspace,
+            navigation_pane,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             root: None,
@@ -234,10 +298,16 @@ impl CallHierarchyView {
             node_index: 0,
         }];
 
-        self.load_children(0, window, cx);
+        self.load_children(0, window, cx, false);
     }
 
-    fn load_children(&mut self, entry_index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn load_children(
+        &mut self,
+        entry_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        recursive_expand: bool,
+    ) {
         let Some(entry) = self.flat_entries.get(entry_index).cloned() else {
             return;
         };
@@ -283,8 +353,11 @@ impl CallHierarchyView {
         let task = cx.spawn_in(window, async move |this, cx| {
             let calls = calls_task.await?;
 
-            this.update_in(cx, |panel, _window, cx| {
-                panel.insert_children(entry_index, calls);
+            this.update_in(cx, |panel, window, cx| {
+                let inserted_range = panel.insert_children(entry_index, calls);
+                if recursive_expand {
+                    panel.expand_inserted_entries(inserted_range, window, cx);
+                }
                 cx.notify();
             })?;
 
@@ -299,7 +372,7 @@ impl CallHierarchyView {
         &mut self,
         parent_index: usize,
         children: Vec<(CallHierarchyItem, Vec<lsp::Range>)>,
-    ) {
+    ) -> std::ops::Range<usize> {
         let parent_depth = self
             .flat_entries
             .get(parent_index)
@@ -328,6 +401,7 @@ impl CallHierarchyView {
 
         self.remap_indices_for_insert(insert_at, inserted_entry_count);
         self.reindex_entries();
+        insert_at..insert_at + inserted_entry_count
     }
 
     fn reindex_entries(&mut self) {
@@ -417,6 +491,60 @@ impl CallHierarchyView {
         });
     }
 
+    fn expand_inserted_entries(
+        &mut self,
+        inserted_range: std::ops::Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for index in inserted_range {
+            if self
+                .flat_entries
+                .get(index)
+                .is_some_and(|entry| entry.has_children)
+            {
+                self.expanded.insert(index);
+                self.load_children(index, window, cx, true);
+            }
+        }
+    }
+
+    fn expand_all_descendants(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry) = self.flat_entries.get(index) else {
+            return;
+        };
+        if !entry.has_children {
+            return;
+        }
+
+        if !self.expanded.contains(&index) {
+            self.expanded.insert(index);
+            self.load_children(index, window, cx, true);
+            return;
+        }
+
+        let parent_depth = entry.depth;
+        let mut direct_child_indices = Vec::new();
+        for child_index in index + 1..self.flat_entries.len() {
+            let child_depth = self.flat_entries[child_index].depth;
+            if child_depth <= parent_depth {
+                break;
+            }
+            if child_depth == parent_depth + 1 {
+                direct_child_indices.push(child_index);
+            }
+        }
+
+        for child_index in direct_child_indices {
+            self.expand_all_descendants(child_index, window, cx);
+        }
+    }
+
     fn toggle_expanded(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.expanded.contains(&index) {
             self.expanded.remove(&index);
@@ -427,7 +555,7 @@ impl CallHierarchyView {
             cx.notify();
         } else {
             self.expanded.insert(index);
-            self.load_children(index, window, cx);
+            self.load_children(index, window, cx, false);
         }
     }
 
@@ -484,15 +612,27 @@ impl CallHierarchyView {
             return;
         };
 
-        let start = item.selection_range.start;
+        let start = entry
+            .from_ranges
+            .first()
+            .map(|range| range.start)
+            .unwrap_or(item.selection_range.start);
         let row = start.line;
         let column = start.character;
 
         workspace.update(cx, |workspace, cx| {
             let path = uri.to_file_path().ok();
             if let Some(path) = path {
-                let open_task = workspace.open_abs_path(path, OpenOptions::default(), window, cx);
-                cx.spawn_in(window, async move |_workspace, cx| {
+                let project = workspace.project().clone();
+                let target_pane = self.navigation_pane.clone();
+                let project_path_task = Workspace::project_path_for_path(project, &path, true, cx);
+
+                cx.spawn_in(window, async move |workspace, cx| {
+                    let (_, project_path) = project_path_task.await?;
+                    let open_task = workspace.update_in(cx, |workspace, window, cx| {
+                        workspace.open_path(project_path, target_pane, true, window, cx)
+                    })?;
+
                     let item = open_task.await?;
                     if let Some(editor) = item.downcast::<Editor>() {
                         editor.update_in(cx, |editor, window, cx| {
@@ -562,6 +702,9 @@ impl CallHierarchyView {
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                     this.select_entry(index, cx);
+                    if has_children {
+                        this.expand_all_descendants(index, window, cx);
+                    }
                     if event.click_count() > 1 {
                         this.navigate_to_entry(index, window, cx);
                     }
@@ -769,4 +912,59 @@ fn symbol_icon(kind: lsp::SymbolKind) -> IconName {
         lsp::SymbolKind::VARIABLE | lsp::SymbolKind::CONSTANT => IconName::Dash,
         _ => IconName::Code,
     }
+}
+
+fn select_call_hierarchy_item(
+    items: Vec<lsp::CallHierarchyItem>,
+    requested_position: language::PointUtf16,
+    source_file_path: Option<std::path::PathBuf>,
+) -> Option<lsp::CallHierarchyItem> {
+    if items.is_empty() {
+        return None;
+    }
+
+    let requested_position = lsp::Position {
+        line: requested_position.row,
+        character: requested_position.column,
+    };
+
+    if let Some(best) = items
+        .iter()
+        .filter(|item| {
+            source_file_path
+                .as_ref()
+                .is_none_or(|source_file_path| lsp_item_is_in_file(item, source_file_path))
+        })
+        .filter(|item| lsp_range_contains_position(&item.selection_range, &requested_position))
+        .min_by_key(|item| {
+            let range = &item.selection_range;
+            (
+                range.end.line.saturating_sub(range.start.line),
+                if range.end.line == range.start.line {
+                    range.end.character.saturating_sub(range.start.character)
+                } else {
+                    range.end.character
+                },
+                range.start.line.abs_diff(requested_position.line),
+                range.start.character.abs_diff(requested_position.character),
+            )
+        })
+    {
+        return Some(best.clone());
+    }
+
+    items.into_iter().next()
+}
+
+fn lsp_range_contains_position(range: &lsp::Range, position: &lsp::Position) -> bool {
+    range.start <= *position && *position < range.end
+}
+
+fn lsp_item_is_in_file(
+    item: &lsp::CallHierarchyItem,
+    source_file_path: &std::path::PathBuf,
+) -> bool {
+    item.uri
+        .to_file_path()
+        .is_ok_and(|item_path| item_path == *source_file_path)
 }
