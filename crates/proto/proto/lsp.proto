@@ -852,6 +852,9 @@ message LspQuery {
     SemanticTokens semantic_tokens = 16;
     GetFoldingRanges get_folding_ranges = 17;
     GetDocumentSymbols get_document_symbols = 18;
+    PrepareCallHierarchy prepare_call_hierarchy = 19;
+    GetIncomingCalls get_incoming_calls = 20;
+    GetOutgoingCalls get_outgoing_calls = 21;
   }
 }
 
@@ -878,6 +881,9 @@ message LspResponse {
     SemanticTokensResponse semantic_tokens_response = 14;
     GetFoldingRangesResponse get_folding_ranges_response = 15;
     GetDocumentSymbolsResponse get_document_symbols_response = 16;
+    PrepareCallHierarchyResponse prepare_call_hierarchy_response = 17;
+    GetIncomingCallsResponse get_incoming_calls_response = 18;
+    GetOutgoingCallsResponse get_outgoing_calls_response = 19;
   }
   uint64 server_id = 7;
 }
@@ -1018,4 +1024,37 @@ message GetFoldingRangesResponse {
   repeated AnchorRange ranges = 1;
   repeated VectorClockEntry version = 2;
   repeated string collapsed_texts = 3;
+}
+
+message PrepareCallHierarchy {
+  uint64 project_id = 1;
+  uint64 buffer_id = 2;
+  Anchor position = 3;
+  repeated VectorClockEntry version = 4;
+}
+
+message PrepareCallHierarchyResponse {
+  repeated bytes items = 1;
+}
+
+message GetIncomingCalls {
+  uint64 project_id = 1;
+  uint64 buffer_id = 2;
+  bytes item = 3;
+  repeated VectorClockEntry version = 4;
+}
+
+message GetIncomingCallsResponse {
+  repeated bytes calls = 1;
+}
+
+message GetOutgoingCalls {
+  uint64 project_id = 1;
+  uint64 buffer_id = 2;
+  bytes item = 3;
+  repeated VectorClockEntry version = 4;
+}
+
+message GetOutgoingCallsResponse {
+  repeated bytes calls = 1;
 }

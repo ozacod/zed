@@ -316,6 +316,21 @@ pub(crate) struct LinkedEditingRange {
     pub position: Anchor,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrepareCallHierarchy {
+    pub position: PointUtf16,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GetIncomingCalls {
+    pub item: lsp::CallHierarchyItem,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct GetOutgoingCalls {
+    pub item: lsp::CallHierarchyItem,
+}
+
 #[derive(Clone, Debug)]
 pub struct GetDocumentDiagnostics {
     /// We cannot blindly rely on server's capabilities.diagnostic_provider, as they're a singular field, whereas
@@ -4911,6 +4926,310 @@ fn process_related_documents(
                 )
             }
         }
+    }
+}
+
+#[async_trait(?Send)]
+impl LspCommand for PrepareCallHierarchy {
+    type Response = Vec<lsp::CallHierarchyItem>;
+    type LspRequest = lsp::request::CallHierarchyPrepare;
+    type ProtoRequest = proto::PrepareCallHierarchy;
+
+    fn display_name(&self) -> &str {
+        "Prepare call hierarchy"
+    }
+
+    fn check_capabilities(&self, capabilities: AdapterServerCapabilities) -> bool {
+        capabilities
+            .server_capabilities
+            .call_hierarchy_provider
+            .is_some()
+    }
+
+    fn to_lsp(
+        &self,
+        path: &Path,
+        _: &Buffer,
+        _: &Arc<LanguageServer>,
+        _: &App,
+    ) -> Result<lsp::CallHierarchyPrepareParams> {
+        Ok(lsp::CallHierarchyPrepareParams {
+            text_document_position_params: make_lsp_text_document_position(path, self.position)?,
+            work_done_progress_params: Default::default(),
+        })
+    }
+
+    async fn response_from_lsp(
+        self,
+        message: Option<Vec<lsp::CallHierarchyItem>>,
+        _: Entity<LspStore>,
+        _: Entity<Buffer>,
+        _: LanguageServerId,
+        _: AsyncApp,
+    ) -> Result<Vec<lsp::CallHierarchyItem>> {
+        Ok(message.unwrap_or_default())
+    }
+
+    fn to_proto(&self, project_id: u64, buffer: &Buffer) -> proto::PrepareCallHierarchy {
+        proto::PrepareCallHierarchy {
+            project_id,
+            buffer_id: buffer.remote_id().into(),
+            position: Some(serialize_anchor(&buffer.anchor_before(self.position))),
+            version: serialize_version(&buffer.version()),
+        }
+    }
+
+    async fn from_proto(
+        message: proto::PrepareCallHierarchy,
+        _: Entity<LspStore>,
+        buffer: Entity<Buffer>,
+        mut cx: AsyncApp,
+    ) -> Result<Self> {
+        let position = message
+            .position
+            .and_then(deserialize_anchor)
+            .context("invalid position")?;
+        buffer
+            .update(&mut cx, |buffer, _| {
+                buffer.wait_for_version(deserialize_version(&message.version))
+            })
+            .await?;
+        Ok(Self {
+            position: buffer.read_with(&cx, |buffer, _| position.to_point_utf16(buffer)),
+        })
+    }
+
+    fn response_to_proto(
+        response: Vec<lsp::CallHierarchyItem>,
+        _: &mut LspStore,
+        _: PeerId,
+        _: &Global,
+        _: &mut App,
+    ) -> proto::PrepareCallHierarchyResponse {
+        proto::PrepareCallHierarchyResponse {
+            items: response
+                .iter()
+                .filter_map(|item| serde_json::to_vec(item).ok())
+                .collect(),
+        }
+    }
+
+    async fn response_from_proto(
+        self,
+        message: proto::PrepareCallHierarchyResponse,
+        _: Entity<LspStore>,
+        _: Entity<Buffer>,
+        _: AsyncApp,
+    ) -> Result<Vec<lsp::CallHierarchyItem>> {
+        message
+            .items
+            .iter()
+            .map(|bytes| serde_json::from_slice(bytes).context("invalid call hierarchy item"))
+            .collect()
+    }
+
+    fn buffer_id_from_proto(message: &proto::PrepareCallHierarchy) -> Result<BufferId> {
+        BufferId::new(message.buffer_id)
+    }
+}
+
+#[async_trait(?Send)]
+impl LspCommand for GetIncomingCalls {
+    type Response = Vec<lsp::CallHierarchyIncomingCall>;
+    type LspRequest = lsp::request::CallHierarchyIncomingCalls;
+    type ProtoRequest = proto::GetIncomingCalls;
+
+    fn display_name(&self) -> &str {
+        "Get incoming calls"
+    }
+
+    fn check_capabilities(&self, capabilities: AdapterServerCapabilities) -> bool {
+        capabilities
+            .server_capabilities
+            .call_hierarchy_provider
+            .is_some()
+    }
+
+    fn to_lsp(
+        &self,
+        _: &Path,
+        _: &Buffer,
+        _: &Arc<LanguageServer>,
+        _: &App,
+    ) -> Result<lsp::CallHierarchyIncomingCallsParams> {
+        Ok(lsp::CallHierarchyIncomingCallsParams {
+            item: self.item.clone(),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+    }
+
+    async fn response_from_lsp(
+        self,
+        message: Option<Vec<lsp::CallHierarchyIncomingCall>>,
+        _: Entity<LspStore>,
+        _: Entity<Buffer>,
+        _: LanguageServerId,
+        _: AsyncApp,
+    ) -> Result<Vec<lsp::CallHierarchyIncomingCall>> {
+        Ok(message.unwrap_or_default())
+    }
+
+    fn to_proto(&self, project_id: u64, buffer: &Buffer) -> proto::GetIncomingCalls {
+        proto::GetIncomingCalls {
+            project_id,
+            buffer_id: buffer.remote_id().into(),
+            item: serde_json::to_vec(&self.item).unwrap_or_default(),
+            version: serialize_version(&buffer.version()),
+        }
+    }
+
+    async fn from_proto(
+        message: proto::GetIncomingCalls,
+        _: Entity<LspStore>,
+        buffer: Entity<Buffer>,
+        mut cx: AsyncApp,
+    ) -> Result<Self> {
+        let item = serde_json::from_slice(&message.item).context("invalid call hierarchy item")?;
+        buffer
+            .update(&mut cx, |buffer, _| {
+                buffer.wait_for_version(deserialize_version(&message.version))
+            })
+            .await?;
+        Ok(Self { item })
+    }
+
+    fn response_to_proto(
+        response: Vec<lsp::CallHierarchyIncomingCall>,
+        _: &mut LspStore,
+        _: PeerId,
+        _: &Global,
+        _: &mut App,
+    ) -> proto::GetIncomingCallsResponse {
+        proto::GetIncomingCallsResponse {
+            calls: response
+                .iter()
+                .filter_map(|call| serde_json::to_vec(call).ok())
+                .collect(),
+        }
+    }
+
+    async fn response_from_proto(
+        self,
+        message: proto::GetIncomingCallsResponse,
+        _: Entity<LspStore>,
+        _: Entity<Buffer>,
+        _: AsyncApp,
+    ) -> Result<Vec<lsp::CallHierarchyIncomingCall>> {
+        message
+            .calls
+            .iter()
+            .map(|bytes| serde_json::from_slice(bytes).context("invalid incoming call"))
+            .collect()
+    }
+
+    fn buffer_id_from_proto(message: &proto::GetIncomingCalls) -> Result<BufferId> {
+        BufferId::new(message.buffer_id)
+    }
+}
+
+#[async_trait(?Send)]
+impl LspCommand for GetOutgoingCalls {
+    type Response = Vec<lsp::CallHierarchyOutgoingCall>;
+    type LspRequest = lsp::request::CallHierarchyOutgoingCalls;
+    type ProtoRequest = proto::GetOutgoingCalls;
+
+    fn display_name(&self) -> &str {
+        "Get outgoing calls"
+    }
+
+    fn check_capabilities(&self, capabilities: AdapterServerCapabilities) -> bool {
+        capabilities
+            .server_capabilities
+            .call_hierarchy_provider
+            .is_some()
+    }
+
+    fn to_lsp(
+        &self,
+        _: &Path,
+        _: &Buffer,
+        _: &Arc<LanguageServer>,
+        _: &App,
+    ) -> Result<lsp::CallHierarchyOutgoingCallsParams> {
+        Ok(lsp::CallHierarchyOutgoingCallsParams {
+            item: self.item.clone(),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+    }
+
+    async fn response_from_lsp(
+        self,
+        message: Option<Vec<lsp::CallHierarchyOutgoingCall>>,
+        _: Entity<LspStore>,
+        _: Entity<Buffer>,
+        _: LanguageServerId,
+        _: AsyncApp,
+    ) -> Result<Vec<lsp::CallHierarchyOutgoingCall>> {
+        Ok(message.unwrap_or_default())
+    }
+
+    fn to_proto(&self, project_id: u64, buffer: &Buffer) -> proto::GetOutgoingCalls {
+        proto::GetOutgoingCalls {
+            project_id,
+            buffer_id: buffer.remote_id().into(),
+            item: serde_json::to_vec(&self.item).unwrap_or_default(),
+            version: serialize_version(&buffer.version()),
+        }
+    }
+
+    async fn from_proto(
+        message: proto::GetOutgoingCalls,
+        _: Entity<LspStore>,
+        buffer: Entity<Buffer>,
+        mut cx: AsyncApp,
+    ) -> Result<Self> {
+        let item = serde_json::from_slice(&message.item).context("invalid call hierarchy item")?;
+        buffer
+            .update(&mut cx, |buffer, _| {
+                buffer.wait_for_version(deserialize_version(&message.version))
+            })
+            .await?;
+        Ok(Self { item })
+    }
+
+    fn response_to_proto(
+        response: Vec<lsp::CallHierarchyOutgoingCall>,
+        _: &mut LspStore,
+        _: PeerId,
+        _: &Global,
+        _: &mut App,
+    ) -> proto::GetOutgoingCallsResponse {
+        proto::GetOutgoingCallsResponse {
+            calls: response
+                .iter()
+                .filter_map(|call| serde_json::to_vec(call).ok())
+                .collect(),
+        }
+    }
+
+    async fn response_from_proto(
+        self,
+        message: proto::GetOutgoingCallsResponse,
+        _: Entity<LspStore>,
+        _: Entity<Buffer>,
+        _: AsyncApp,
+    ) -> Result<Vec<lsp::CallHierarchyOutgoingCall>> {
+        message
+            .calls
+            .iter()
+            .map(|bytes| serde_json::from_slice(bytes).context("invalid outgoing call"))
+            .collect()
+    }
+
+    fn buffer_id_from_proto(message: &proto::GetOutgoingCalls) -> Result<BufferId> {
+        BufferId::new(message.buffer_id)
     }
 }
 

@@ -6015,68 +6015,69 @@ impl LspStore {
         }
     }
 
-    fn call_hierarchy_server_for_buffer(
-        &self,
-        buffer: &Entity<Buffer>,
-        cx: &mut Context<Self>,
-    ) -> Option<Arc<LanguageServer>> {
-        let local = self.as_local()?;
-        let server_ids = buffer.update(cx, |buffer, cx| {
-            local.language_server_ids_for_buffer(buffer, cx)
-        });
-        server_ids
-            .into_iter()
-            .filter_map(|server_id| match local.language_servers.get(&server_id)? {
-                LanguageServerState::Running { server, .. } => Some(server.clone()),
-                _ => None,
-            })
-            .find(|server| server.capabilities().call_hierarchy_provider.is_some())
-    }
-
     pub fn prepare_call_hierarchy(
         &mut self,
         buffer: &Entity<Buffer>,
         position: PointUtf16,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<lsp::CallHierarchyItem>>> {
-        let Some(language_server) = self.call_hierarchy_server_for_buffer(buffer, cx) else {
-            return Task::ready(Ok(Vec::new()));
-        };
+        if let Some((upstream_client, project_id)) = self.upstream_client() {
+            let request = PrepareCallHierarchy { position };
+            if !self.is_capable_for_proto_request(buffer, &request, cx) {
+                return Task::ready(Ok(Vec::new()));
+            }
 
-        let abs_path = match buffer
-            .read(cx)
-            .file()
-            .and_then(|file| file.as_local())
-            .map(|f| f.abs_path(cx))
-        {
-            Some(path) => path,
-            None => return Task::ready(Ok(Vec::new())),
-        };
+            let request_timeout = ProjectSettings::get_global(cx)
+                .global_lsp_settings
+                .get_request_timeout();
 
-        let uri = match lsp_command::file_path_to_lsp_url(&abs_path) {
-            Ok(uri) => uri,
-            Err(error) => return Task::ready(Err(error)),
-        };
+            let request_task = upstream_client.request_lsp(
+                project_id,
+                None,
+                request_timeout,
+                cx.background_executor().clone(),
+                request.to_proto(project_id, buffer.read(cx)),
+            );
+            let buffer = buffer.clone();
+            cx.spawn(async move |weak_lsp_store, cx| {
+                let Some(lsp_store) = weak_lsp_store.upgrade() else {
+                    return Ok(Vec::new());
+                };
+                let Some(responses) = request_task.await? else {
+                    return Ok(Vec::new());
+                };
+                let items = join_all(responses.payload.into_iter().map(|response| {
+                    PrepareCallHierarchy { position }.response_from_proto(
+                        response.response,
+                        lsp_store.clone(),
+                        buffer.clone(),
+                        cx.clone(),
+                    )
+                }))
+                .await;
 
-        let request_timeout = ProjectSettings::get_global(cx)
-            .global_lsp_settings
-            .get_request_timeout();
-
-        let params = lsp::CallHierarchyPrepareParams {
-            text_document_position_params: lsp::TextDocumentPositionParams {
-                text_document: lsp::TextDocumentIdentifier { uri },
-                position: point_to_lsp(position),
-            },
-            work_done_progress_params: Default::default(),
-        };
-
-        cx.background_spawn(async move {
-            let response = language_server
-                .request::<lsp::request::CallHierarchyPrepare>(params, request_timeout)
-                .await
-                .into_response()?;
-            Ok(response.unwrap_or_default())
-        })
+                Ok(items
+                    .into_iter()
+                    .collect::<Result<Vec<Vec<_>>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect())
+            })
+        } else {
+            let task = self.request_multiple_lsp_locally(
+                buffer,
+                Some(position),
+                PrepareCallHierarchy { position },
+                cx,
+            );
+            cx.background_spawn(async move {
+                Ok(task
+                    .await
+                    .into_iter()
+                    .flat_map(|(_, items)| items)
+                    .collect())
+            })
+        }
     }
 
     pub fn incoming_calls(
@@ -6085,27 +6086,63 @@ impl LspStore {
         buffer: &Entity<Buffer>,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<lsp::CallHierarchyIncomingCall>>> {
-        let Some(language_server) = self.call_hierarchy_server_for_buffer(buffer, cx) else {
-            return Task::ready(Ok(Vec::new()));
-        };
+        if let Some((upstream_client, project_id)) = self.upstream_client() {
+            let request = GetIncomingCalls { item: item.clone() };
+            if !self.is_capable_for_proto_request(buffer, &request, cx) {
+                return Task::ready(Ok(Vec::new()));
+            }
 
-        let request_timeout = ProjectSettings::get_global(cx)
-            .global_lsp_settings
-            .get_request_timeout();
+            let request_timeout = ProjectSettings::get_global(cx)
+                .global_lsp_settings
+                .get_request_timeout();
 
-        let params = lsp::CallHierarchyIncomingCallsParams {
-            item,
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
+            let request_task = upstream_client.request_lsp(
+                project_id,
+                None,
+                request_timeout,
+                cx.background_executor().clone(),
+                request.to_proto(project_id, buffer.read(cx)),
+            );
+            let buffer = buffer.clone();
+            cx.spawn(async move |weak_lsp_store, cx| {
+                let Some(lsp_store) = weak_lsp_store.upgrade() else {
+                    return Ok(Vec::new());
+                };
+                let Some(responses) = request_task.await? else {
+                    return Ok(Vec::new());
+                };
+                let calls = join_all(responses.payload.into_iter().map(|response| {
+                    GetIncomingCalls { item: item.clone() }.response_from_proto(
+                        response.response,
+                        lsp_store.clone(),
+                        buffer.clone(),
+                        cx.clone(),
+                    )
+                }))
+                .await;
 
-        cx.background_spawn(async move {
-            let response = language_server
-                .request::<lsp::request::CallHierarchyIncomingCalls>(params, request_timeout)
-                .await
-                .into_response()?;
-            Ok(response.unwrap_or_default())
-        })
+                Ok(calls
+                    .into_iter()
+                    .collect::<Result<Vec<Vec<_>>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect())
+            })
+        } else {
+            let task = self.request_multiple_lsp_locally(
+                buffer,
+                None::<usize>,
+                GetIncomingCalls { item },
+                cx,
+            );
+            cx.background_spawn(async move {
+                Ok(task
+                    .await
+                    .into_iter()
+                    .flat_map(|(_, calls)| calls)
+                    .collect())
+            })
+        }
     }
 
     pub fn outgoing_calls(
@@ -6114,27 +6151,63 @@ impl LspStore {
         buffer: &Entity<Buffer>,
         cx: &mut Context<Self>,
     ) -> Task<Result<Vec<lsp::CallHierarchyOutgoingCall>>> {
-        let Some(language_server) = self.call_hierarchy_server_for_buffer(buffer, cx) else {
-            return Task::ready(Ok(Vec::new()));
-        };
+        if let Some((upstream_client, project_id)) = self.upstream_client() {
+            let request = GetOutgoingCalls { item: item.clone() };
+            if !self.is_capable_for_proto_request(buffer, &request, cx) {
+                return Task::ready(Ok(Vec::new()));
+            }
 
-        let request_timeout = ProjectSettings::get_global(cx)
-            .global_lsp_settings
-            .get_request_timeout();
+            let request_timeout = ProjectSettings::get_global(cx)
+                .global_lsp_settings
+                .get_request_timeout();
 
-        let params = lsp::CallHierarchyOutgoingCallsParams {
-            item,
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
+            let request_task = upstream_client.request_lsp(
+                project_id,
+                None,
+                request_timeout,
+                cx.background_executor().clone(),
+                request.to_proto(project_id, buffer.read(cx)),
+            );
+            let buffer = buffer.clone();
+            cx.spawn(async move |weak_lsp_store, cx| {
+                let Some(lsp_store) = weak_lsp_store.upgrade() else {
+                    return Ok(Vec::new());
+                };
+                let Some(responses) = request_task.await? else {
+                    return Ok(Vec::new());
+                };
+                let calls = join_all(responses.payload.into_iter().map(|response| {
+                    GetOutgoingCalls { item: item.clone() }.response_from_proto(
+                        response.response,
+                        lsp_store.clone(),
+                        buffer.clone(),
+                        cx.clone(),
+                    )
+                }))
+                .await;
 
-        cx.background_spawn(async move {
-            let response = language_server
-                .request::<lsp::request::CallHierarchyOutgoingCalls>(params, request_timeout)
-                .await
-                .into_response()?;
-            Ok(response.unwrap_or_default())
-        })
+                Ok(calls
+                    .into_iter()
+                    .collect::<Result<Vec<Vec<_>>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect())
+            })
+        } else {
+            let task = self.request_multiple_lsp_locally(
+                buffer,
+                None::<usize>,
+                GetOutgoingCalls { item },
+                cx,
+            );
+            cx.background_spawn(async move {
+                Ok(task
+                    .await
+                    .into_iter()
+                    .flat_map(|(_, calls)| calls)
+                    .collect())
+            })
+        }
     }
 
     pub fn code_actions(
@@ -9094,6 +9167,46 @@ impl LspStore {
                 )
                 .await
                 .context("querying for inlay hints")?
+            }
+            Request::PrepareCallHierarchy(prepare_call_hierarchy) => {
+                let position = prepare_call_hierarchy
+                    .position
+                    .clone()
+                    .and_then(deserialize_anchor);
+                Self::query_lsp_locally::<PrepareCallHierarchy>(
+                    lsp_store,
+                    server_id,
+                    sender_id,
+                    lsp_request_id,
+                    prepare_call_hierarchy,
+                    position,
+                    &mut cx,
+                )
+                .await?;
+            }
+            Request::GetIncomingCalls(get_incoming_calls) => {
+                Self::query_lsp_locally::<GetIncomingCalls>(
+                    lsp_store,
+                    server_id,
+                    sender_id,
+                    lsp_request_id,
+                    get_incoming_calls,
+                    None,
+                    &mut cx,
+                )
+                .await?;
+            }
+            Request::GetOutgoingCalls(get_outgoing_calls) => {
+                Self::query_lsp_locally::<GetOutgoingCalls>(
+                    lsp_store,
+                    server_id,
+                    sender_id,
+                    lsp_request_id,
+                    get_outgoing_calls,
+                    None,
+                    &mut cx,
+                )
+                .await?;
             }
             //////////////////////////////
             // Below are LSP queries that need to fetch more data,

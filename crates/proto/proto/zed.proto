@@ -469,7 +469,14 @@ message Envelope {
         SemanticTokensResponse semantic_tokens_response = 419;
         RefreshSemanticTokens refresh_semantic_tokens = 420;
         GetFoldingRanges get_folding_ranges = 421;
-        GetFoldingRangesResponse get_folding_ranges_response = 422; // current max
+        GetFoldingRangesResponse get_folding_ranges_response = 422;
+
+        PrepareCallHierarchy prepare_call_hierarchy = 423;
+        PrepareCallHierarchyResponse prepare_call_hierarchy_response = 424;
+        GetIncomingCalls get_incoming_calls = 425;
+        GetIncomingCallsResponse get_incoming_calls_response = 426;
+        GetOutgoingCalls get_outgoing_calls = 427;
+        GetOutgoingCallsResponse get_outgoing_calls_response = 428; // current max
     }
 
     reserved 87 to 88;
