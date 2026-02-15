@@ -17,9 +17,7 @@ use ui::{
 };
 use workspace::item::{Item, ItemHandle};
 use workspace::{Pane, SplitDirection, Workspace};
-use zed_actions::call_hierarchy::{
-    ShowCallHierarchy, ShowIncomingCalls, ShowOutgoingCalls, ToggleFocus,
-};
+use zed_actions::call_hierarchy::{ShowCallHierarchy, ShowIncomingCalls, ShowOutgoingCalls};
 
 actions!(
     call_hierarchy,
@@ -69,9 +67,6 @@ struct FlatEntry {
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
-        workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
-            open_or_focus_call_hierarchy_view(workspace, window, cx);
-        });
         workspace.register_action(|workspace, _: &ShowCallHierarchy, window, cx| {
             let navigation_pane = workspace.active_pane().downgrade();
             let active_editor = workspace
@@ -125,33 +120,6 @@ pub fn init(cx: &mut App) {
         });
     })
     .detach();
-}
-
-fn open_or_focus_call_hierarchy_view(
-    workspace: &mut Workspace,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) -> Entity<CallHierarchyView> {
-    if let Some(existing) = workspace.item_of_type::<CallHierarchyView>(cx) {
-        let is_active = workspace
-            .active_item(cx)
-            .is_some_and(|item| item.item_id() == existing.entity_id());
-        workspace.activate_item(&existing, true, !is_active, window, cx);
-        return existing;
-    }
-
-    let workspace_handle = workspace.weak_handle();
-    let project = workspace.project().clone();
-    let view = cx.new(|cx| CallHierarchyView::new(project, workspace_handle, None, cx));
-    match workspace.find_pane_in_direction(SplitDirection::Right, cx) {
-        Some(right_pane) => {
-            workspace.add_item(right_pane, view.boxed_clone(), None, true, true, window, cx);
-        }
-        None => {
-            workspace.split_item(SplitDirection::Right, view.boxed_clone(), window, cx);
-        }
-    }
-    view
 }
 
 fn open_or_focus_call_hierarchy_view_in_right_pane(
@@ -423,8 +391,7 @@ impl CallHierarchyView {
         let mut inserted_entry_ids = Vec::with_capacity(children.len());
         let mut entries_to_insert = Vec::with_capacity(children.len());
         for (index, (item, from_ranges)) in children.into_iter().enumerate() {
-            let is_cycle =
-                ancestor_keys.contains(&(item.uri.to_string(), item.selection_range));
+            let is_cycle = ancestor_keys.contains(&(item.uri.to_string(), item.selection_range));
             let entry_id = self.new_entry_id();
             inserted_entry_ids.push(entry_id);
             entries_to_insert.push(FlatEntry {
@@ -447,11 +414,7 @@ impl CallHierarchyView {
     }
 
     fn ancestor_items(&self, index: usize) -> impl Iterator<Item = &CallHierarchyItem> {
-        let target_depth = self
-            .flat_entries
-            .get(index)
-            .map(|e| e.depth)
-            .unwrap_or(0);
+        let target_depth = self.flat_entries.get(index).map(|e| e.depth).unwrap_or(0);
         let mut current_depth = target_depth;
         self.flat_entries[..=index]
             .iter()
