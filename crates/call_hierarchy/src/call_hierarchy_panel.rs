@@ -15,8 +15,8 @@ use ui::{
     FluentBuilder, Icon, IconButton, IconButtonShape, IconName, Label, ListItem, Tooltip,
     prelude::*,
 };
-use workspace::item::Item;
-use workspace::{OpenOptions, Workspace};
+use workspace::item::{Item, ItemHandle};
+use workspace::{OpenOptions, SplitDirection, Workspace};
 use zed_actions::call_hierarchy::{
     ShowCallHierarchy, ShowIncomingCalls, ShowOutgoingCalls, ToggleFocus,
 };
@@ -122,7 +122,14 @@ fn open_or_focus_call_hierarchy_view(
     let workspace_handle = workspace.weak_handle();
     let project = workspace.project().clone();
     let view = cx.new(|cx| CallHierarchyView::new(project, workspace_handle, cx));
-    workspace.add_item_to_active_pane(Box::new(view.clone()), None, true, window, cx);
+    match workspace.find_pane_in_direction(SplitDirection::Right, cx) {
+        Some(right_pane) => {
+            workspace.add_item(right_pane, view.boxed_clone(), None, true, true, window, cx);
+        }
+        None => {
+            workspace.split_item(SplitDirection::Right, view.boxed_clone(), window, cx);
+        }
+    }
     view
 }
 
@@ -668,11 +675,19 @@ impl CallHierarchyView {
         if self.flat_entries.is_empty() {
             return v_flex()
                 .size_full()
-                .justify_center()
+                .p_2()
+                .gap_1()
+                .items_start()
                 .child(
-                    Label::new("No call hierarchy available")
-                        .color(Color::Muted)
-                        .size(LabelSize::Small),
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .child(Icon::new(IconName::ListTree).size(IconSize::XSmall))
+                        .child(
+                            Label::new("No call hierarchy results")
+                                .color(Color::Muted)
+                                .size(LabelSize::Small),
+                        ),
                 )
                 .into_any_element();
         }
