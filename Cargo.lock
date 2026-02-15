@@ -2532,10 +2532,7 @@ dependencies = [
  "lsp",
  "menu",
  "project",
- "settings",
- "theme",
  "ui",
- "util",
  "workspace",
  "zed_actions",
 ]

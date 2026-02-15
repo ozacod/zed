@@ -54,7 +54,7 @@ pub struct CallHierarchyView {
     selected_index: Option<usize>,
     direction: CallDirection,
 
-    pending_load: Option<Task<Result<()>>>,
+    pending_loads: Vec<Task<Result<()>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,10 +98,10 @@ pub fn init(cx: &mut App) {
                 window,
                 cx,
             );
-            view.update(cx, |view, _cx| {
-                view.direction = CallDirection::Incoming;
-            });
             if let Some(active_editor) = active_editor {
+                view.update(cx, |view, _cx| {
+                    view.direction = CallDirection::Incoming;
+                });
                 trigger_call_hierarchy(workspace, active_editor, view, window, cx);
             }
         });
@@ -116,10 +116,10 @@ pub fn init(cx: &mut App) {
                 window,
                 cx,
             );
-            view.update(cx, |view, _cx| {
-                view.direction = CallDirection::Outgoing;
-            });
             if let Some(active_editor) = active_editor {
+                view.update(cx, |view, _cx| {
+                    view.direction = CallDirection::Outgoing;
+                });
                 trigger_call_hierarchy(workspace, active_editor, view, window, cx);
             }
         });
@@ -264,7 +264,7 @@ impl CallHierarchyView {
             expanded: HashSet::default(),
             selected_index: None,
             direction: CallDirection::Incoming,
-            pending_load: None,
+            pending_loads: Vec::new(),
         }
     }
 
@@ -275,7 +275,7 @@ impl CallHierarchyView {
         self.next_entry_id = 0;
         self.expanded.clear();
         self.selected_index = None;
-        self.pending_load = None;
+        self.pending_loads.clear();
         cx.notify();
     }
 
@@ -381,7 +381,7 @@ impl CallHierarchyView {
             anyhow::Ok(())
         });
 
-        self.pending_load = Some(task);
+        self.pending_loads.push(task);
         cx.notify();
     }
 
@@ -397,11 +397,24 @@ impl CallHierarchyView {
             return Vec::new();
         }
 
+        if children.is_empty() {
+            if let Some(parent_entry) = self.flat_entries.get_mut(parent_index) {
+                parent_entry.has_children = false;
+            }
+            self.expanded.remove(&parent_index);
+            return Vec::new();
+        }
+
         let parent_depth = self
             .flat_entries
             .get(parent_index)
             .map(|e| e.depth)
             .unwrap_or(0);
+
+        let ancestor_keys: HashSet<(String, lsp::Range)> = self
+            .ancestor_items(parent_index)
+            .map(|item| (item.uri.to_string(), item.selection_range))
+            .collect();
 
         let insert_at = parent_index + 1;
         let old_child_count = self.count_visible_descendants(parent_index);
@@ -410,6 +423,8 @@ impl CallHierarchyView {
         let mut inserted_entry_ids = Vec::with_capacity(children.len());
         let mut entries_to_insert = Vec::with_capacity(children.len());
         for (index, (item, from_ranges)) in children.into_iter().enumerate() {
+            let is_cycle =
+                ancestor_keys.contains(&(item.uri.to_string(), item.selection_range));
             let entry_id = self.new_entry_id();
             inserted_entry_ids.push(entry_id);
             entries_to_insert.push(FlatEntry {
@@ -417,7 +432,7 @@ impl CallHierarchyView {
                 item,
                 from_ranges,
                 depth: parent_depth + 1,
-                has_children: true,
+                has_children: !is_cycle,
                 node_index: insert_at + index,
             });
         }
@@ -429,6 +444,27 @@ impl CallHierarchyView {
         self.remap_indices_for_insert(insert_at, inserted_entry_count);
         self.reindex_entries();
         inserted_entry_ids
+    }
+
+    fn ancestor_items(&self, index: usize) -> impl Iterator<Item = &CallHierarchyItem> {
+        let target_depth = self
+            .flat_entries
+            .get(index)
+            .map(|e| e.depth)
+            .unwrap_or(0);
+        let mut current_depth = target_depth;
+        self.flat_entries[..=index]
+            .iter()
+            .rev()
+            .filter(move |entry| {
+                if entry.depth < current_depth {
+                    current_depth = entry.depth;
+                    true
+                } else {
+                    entry.depth == target_depth && entry.node_index == index
+                }
+            })
+            .map(|entry| &entry.item)
     }
 
     fn reindex_entries(&mut self) {
@@ -676,14 +712,9 @@ impl CallHierarchyView {
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                     this.select_entry(index, cx);
-                    if event.click_count() > 1 {
-                        if has_children {
-                            this.toggle_expanded(index, window, cx);
-                        }
-                        return;
+                    if event.click_count() >= 2 {
+                        this.navigate_to_entry(index, window, cx);
                     }
-
-                    this.navigate_to_entry(index, window, cx);
                 }),
             )
             .cursor_pointer()
@@ -741,17 +772,11 @@ impl CallHierarchyView {
                     .tooltip(Tooltip::text("Incoming Calls"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if this.direction != CallDirection::Incoming {
-                            this.direction = CallDirection::Incoming;
-                            if let Some(root) = this.root.clone() {
-                                if let Some(buffer) = this.root_buffer.clone() {
-                                    this.set_root(
-                                        root,
-                                        buffer,
-                                        CallDirection::Incoming,
-                                        window,
-                                        cx,
-                                    );
-                                }
+                            if let (Some(root), Some(buffer)) =
+                                (this.root.clone(), this.root_buffer.clone())
+                            {
+                                this.direction = CallDirection::Incoming;
+                                this.set_root(root, buffer, CallDirection::Incoming, window, cx);
                             }
                         }
                     })),
@@ -764,17 +789,11 @@ impl CallHierarchyView {
                     .tooltip(Tooltip::text("Outgoing Calls"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if this.direction != CallDirection::Outgoing {
-                            this.direction = CallDirection::Outgoing;
-                            if let Some(root) = this.root.clone() {
-                                if let Some(buffer) = this.root_buffer.clone() {
-                                    this.set_root(
-                                        root,
-                                        buffer,
-                                        CallDirection::Outgoing,
-                                        window,
-                                        cx,
-                                    );
-                                }
+                            if let (Some(root), Some(buffer)) =
+                                (this.root.clone(), this.root_buffer.clone())
+                            {
+                                this.direction = CallDirection::Outgoing;
+                                this.set_root(root, buffer, CallDirection::Outgoing, window, cx);
                             }
                         }
                     })),

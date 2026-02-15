@@ -631,7 +631,7 @@ fn initialize_panels(
             workspace_handle.clone(),
             cx.clone(),
         );
-        let debug_panel = DebugPanel::load(workspace_handle.clone(), &mut cx.clone());
+        let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,

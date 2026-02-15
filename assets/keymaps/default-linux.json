@@ -848,6 +848,15 @@
     },
   },
   {
+    "context": "CallHierarchyView",
+    "bindings": {
+      "left": "call_hierarchy::CollapseSelectedEntry",
+      "right": "call_hierarchy::ExpandSelectedEntry",
+      "space": "call_hierarchy::OpenSelectedEntry",
+      "enter": "call_hierarchy::OpenSelectedEntry",
+    },
+  },
+  {
     "context": "OutlinePanel && not_editing",
     "bindings": {
       "escape": "menu::Cancel",
