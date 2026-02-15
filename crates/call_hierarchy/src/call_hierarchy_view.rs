@@ -49,6 +49,7 @@ pub struct CallHierarchyView {
     root: Option<CallHierarchyItem>,
     root_buffer: Option<Entity<language::Buffer>>,
     flat_entries: Vec<FlatEntry>,
+    next_entry_id: usize,
     expanded: HashSet<usize>,
     selected_index: Option<usize>,
     direction: CallDirection,
@@ -58,6 +59,7 @@ pub struct CallHierarchyView {
 
 #[derive(Debug, Clone)]
 struct FlatEntry {
+    entry_id: usize,
     item: CallHierarchyItem,
     from_ranges: Vec<lsp::Range>,
     depth: usize,
@@ -258,6 +260,7 @@ impl CallHierarchyView {
             root: None,
             root_buffer: None,
             flat_entries: Vec::new(),
+            next_entry_id: 0,
             expanded: HashSet::default(),
             selected_index: None,
             direction: CallDirection::Incoming,
@@ -269,6 +272,7 @@ impl CallHierarchyView {
         self.root = None;
         self.root_buffer = None;
         self.flat_entries.clear();
+        self.next_entry_id = 0;
         self.expanded.clear();
         self.selected_index = None;
         self.pending_load = None;
@@ -283,6 +287,7 @@ impl CallHierarchyView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let root_entry_id = self.new_entry_id();
         self.root = Some(item.clone());
         self.root_buffer = Some(buffer);
         self.direction = direction;
@@ -291,6 +296,7 @@ impl CallHierarchyView {
         self.selected_index = Some(0);
 
         self.flat_entries = vec![FlatEntry {
+            entry_id: root_entry_id,
             item,
             from_ranges: Vec::new(),
             depth: 0,
@@ -298,16 +304,30 @@ impl CallHierarchyView {
             node_index: 0,
         }];
 
-        self.load_children(0, window, cx, false);
+        self.load_children(root_entry_id, window, cx);
+    }
+
+    fn new_entry_id(&mut self) -> usize {
+        let entry_id = self.next_entry_id;
+        self.next_entry_id = self.next_entry_id.saturating_add(1);
+        entry_id
+    }
+
+    fn entry_index_by_id(&self, entry_id: usize) -> Option<usize> {
+        self.flat_entries
+            .iter()
+            .position(|entry| entry.entry_id == entry_id)
     }
 
     fn load_children(
         &mut self,
-        entry_index: usize,
+        parent_entry_id: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
-        recursive_expand: bool,
     ) {
+        let Some(entry_index) = self.entry_index_by_id(parent_entry_id) else {
+            return;
+        };
         let Some(entry) = self.flat_entries.get(entry_index).cloned() else {
             return;
         };
@@ -353,11 +373,8 @@ impl CallHierarchyView {
         let task = cx.spawn_in(window, async move |this, cx| {
             let calls = calls_task.await?;
 
-            this.update_in(cx, |panel, window, cx| {
-                let inserted_range = panel.insert_children(entry_index, calls);
-                if recursive_expand {
-                    panel.expand_inserted_entries(inserted_range, window, cx);
-                }
+            this.update_in(cx, |panel, _window, cx| {
+                panel.insert_children(parent_entry_id, calls);
                 cx.notify();
             })?;
 
@@ -370,9 +387,16 @@ impl CallHierarchyView {
 
     fn insert_children(
         &mut self,
-        parent_index: usize,
+        parent_entry_id: usize,
         children: Vec<(CallHierarchyItem, Vec<lsp::Range>)>,
-    ) -> std::ops::Range<usize> {
+    ) -> Vec<usize> {
+        let Some(parent_index) = self.entry_index_by_id(parent_entry_id) else {
+            return Vec::new();
+        };
+        if !self.expanded.contains(&parent_index) {
+            return Vec::new();
+        }
+
         let parent_depth = self
             .flat_entries
             .get(parent_index)
@@ -383,17 +407,20 @@ impl CallHierarchyView {
         let old_child_count = self.count_visible_descendants(parent_index);
         self.remove_entry_range(insert_at, old_child_count, parent_index);
 
-        let entries_to_insert: Vec<FlatEntry> = children
-            .into_iter()
-            .enumerate()
-            .map(|(index, (item, from_ranges))| FlatEntry {
+        let mut inserted_entry_ids = Vec::with_capacity(children.len());
+        let mut entries_to_insert = Vec::with_capacity(children.len());
+        for (index, (item, from_ranges)) in children.into_iter().enumerate() {
+            let entry_id = self.new_entry_id();
+            inserted_entry_ids.push(entry_id);
+            entries_to_insert.push(FlatEntry {
+                entry_id,
                 item,
                 from_ranges,
                 depth: parent_depth + 1,
                 has_children: true,
                 node_index: insert_at + index,
-            })
-            .collect();
+            });
+        }
 
         let inserted_entry_count = entries_to_insert.len();
         self.flat_entries
@@ -401,7 +428,7 @@ impl CallHierarchyView {
 
         self.remap_indices_for_insert(insert_at, inserted_entry_count);
         self.reindex_entries();
-        insert_at..insert_at + inserted_entry_count
+        inserted_entry_ids
     }
 
     fn reindex_entries(&mut self) {
@@ -491,60 +518,6 @@ impl CallHierarchyView {
         });
     }
 
-    fn expand_inserted_entries(
-        &mut self,
-        inserted_range: std::ops::Range<usize>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        for index in inserted_range {
-            if self
-                .flat_entries
-                .get(index)
-                .is_some_and(|entry| entry.has_children)
-            {
-                self.expanded.insert(index);
-                self.load_children(index, window, cx, true);
-            }
-        }
-    }
-
-    fn expand_all_descendants(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(entry) = self.flat_entries.get(index) else {
-            return;
-        };
-        if !entry.has_children {
-            return;
-        }
-
-        if !self.expanded.contains(&index) {
-            self.expanded.insert(index);
-            self.load_children(index, window, cx, true);
-            return;
-        }
-
-        let parent_depth = entry.depth;
-        let mut direct_child_indices = Vec::new();
-        for child_index in index + 1..self.flat_entries.len() {
-            let child_depth = self.flat_entries[child_index].depth;
-            if child_depth <= parent_depth {
-                break;
-            }
-            if child_depth == parent_depth + 1 {
-                direct_child_indices.push(child_index);
-            }
-        }
-
-        for child_index in direct_child_indices {
-            self.expand_all_descendants(child_index, window, cx);
-        }
-    }
-
     fn toggle_expanded(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.expanded.contains(&index) {
             self.expanded.remove(&index);
@@ -555,7 +528,8 @@ impl CallHierarchyView {
             cx.notify();
         } else {
             self.expanded.insert(index);
-            self.load_children(index, window, cx, false);
+            let entry_id = self.flat_entries[index].entry_id;
+            self.load_children(entry_id, window, cx);
         }
     }
 
@@ -702,12 +676,14 @@ impl CallHierarchyView {
             .on_click(
                 cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                     this.select_entry(index, cx);
-                    if has_children {
-                        this.expand_all_descendants(index, window, cx);
-                    }
                     if event.click_count() > 1 {
-                        this.navigate_to_entry(index, window, cx);
+                        if has_children {
+                            this.toggle_expanded(index, window, cx);
+                        }
+                        return;
                     }
+
+                    this.navigate_to_entry(index, window, cx);
                 }),
             )
             .cursor_pointer()
