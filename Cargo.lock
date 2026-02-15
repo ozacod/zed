@@ -2521,6 +2521,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "call_hierarchy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "editor",
+ "gpui",
+ "language",
+ "lsp",
+ "menu",
+ "project",
+ "settings",
+ "theme",
+ "ui",
+ "util",
+ "workspace",
+ "zed_actions",
+]
+
+[[package]]
 name = "calloop"
 version = "0.14.3"
 source = "git+https://github.com/zed-industries/calloop#eb6b4fd17b9af5ecc226546bdd04185391b3e265"
@@ -21217,6 +21237,7 @@ dependencies = [
  "bincode",
  "breadcrumbs",
  "call",
+ "call_hierarchy",
  "channel",
  "chrono",
  "clap",

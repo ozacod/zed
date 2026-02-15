@@ -1015,6 +1015,9 @@ impl LanguageServer {
                             ]),
                         }),
                     }),
+                    call_hierarchy: Some(CallHierarchyClientCapabilities {
+                        dynamic_registration: Some(true),
+                    }),
                     ..TextDocumentClientCapabilities::default()
                 }),
                 experimental: Some(json!({

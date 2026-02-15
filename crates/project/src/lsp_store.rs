@@ -6015,6 +6015,128 @@ impl LspStore {
         }
     }
 
+    fn call_hierarchy_server_for_buffer(
+        &self,
+        buffer: &Entity<Buffer>,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<LanguageServer>> {
+        let local = self.as_local()?;
+        let server_ids = buffer.update(cx, |buffer, cx| {
+            local.language_server_ids_for_buffer(buffer, cx)
+        });
+        server_ids
+            .into_iter()
+            .filter_map(|server_id| match local.language_servers.get(&server_id)? {
+                LanguageServerState::Running { server, .. } => Some(server.clone()),
+                _ => None,
+            })
+            .find(|server| server.capabilities().call_hierarchy_provider.is_some())
+    }
+
+    pub fn prepare_call_hierarchy(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        position: PointUtf16,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<lsp::CallHierarchyItem>>> {
+        let Some(language_server) = self.call_hierarchy_server_for_buffer(buffer, cx) else {
+            return Task::ready(Ok(Vec::new()));
+        };
+
+        let abs_path = match buffer
+            .read(cx)
+            .file()
+            .and_then(|file| file.as_local())
+            .map(|f| f.abs_path(cx))
+        {
+            Some(path) => path,
+            None => return Task::ready(Ok(Vec::new())),
+        };
+
+        let uri = match lsp_command::file_path_to_lsp_url(&abs_path) {
+            Ok(uri) => uri,
+            Err(error) => return Task::ready(Err(error)),
+        };
+
+        let request_timeout = ProjectSettings::get_global(cx)
+            .global_lsp_settings
+            .get_request_timeout();
+
+        let params = lsp::CallHierarchyPrepareParams {
+            text_document_position_params: lsp::TextDocumentPositionParams {
+                text_document: lsp::TextDocumentIdentifier { uri },
+                position: point_to_lsp(position),
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        cx.background_spawn(async move {
+            let response = language_server
+                .request::<lsp::request::CallHierarchyPrepare>(params, request_timeout)
+                .await
+                .into_response()?;
+            Ok(response.unwrap_or_default())
+        })
+    }
+
+    pub fn incoming_calls(
+        &mut self,
+        item: lsp::CallHierarchyItem,
+        buffer: &Entity<Buffer>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<lsp::CallHierarchyIncomingCall>>> {
+        let Some(language_server) = self.call_hierarchy_server_for_buffer(buffer, cx) else {
+            return Task::ready(Ok(Vec::new()));
+        };
+
+        let request_timeout = ProjectSettings::get_global(cx)
+            .global_lsp_settings
+            .get_request_timeout();
+
+        let params = lsp::CallHierarchyIncomingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        cx.background_spawn(async move {
+            let response = language_server
+                .request::<lsp::request::CallHierarchyIncomingCalls>(params, request_timeout)
+                .await
+                .into_response()?;
+            Ok(response.unwrap_or_default())
+        })
+    }
+
+    pub fn outgoing_calls(
+        &mut self,
+        item: lsp::CallHierarchyItem,
+        buffer: &Entity<Buffer>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Vec<lsp::CallHierarchyOutgoingCall>>> {
+        let Some(language_server) = self.call_hierarchy_server_for_buffer(buffer, cx) else {
+            return Task::ready(Ok(Vec::new()));
+        };
+
+        let request_timeout = ProjectSettings::get_global(cx)
+            .global_lsp_settings
+            .get_request_timeout();
+
+        let params = lsp::CallHierarchyOutgoingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        cx.background_spawn(async move {
+            let response = language_server
+                .request::<lsp::request::CallHierarchyOutgoingCalls>(params, request_timeout)
+                .await
+                .into_response()?;
+            Ok(response.unwrap_or_default())
+        })
+    }
+
     pub fn code_actions(
         &mut self,
         buffer: &Entity<Buffer>,

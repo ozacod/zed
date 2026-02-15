@@ -514,6 +514,7 @@
       "alt-f12": "editor::GoToDefinitionSplit",
       "ctrl-f12": "editor::GoToImplementation",
       "shift-alt-f12": "editor::FindAllReferences",
+      "shift-alt-h": "call_hierarchy::ShowCallHierarchy",
       "ctrl-shift-\\": "editor::MoveToEnclosingBracket",
       "ctrl-shift-[": "editor::Fold",
       "ctrl-shift-]": "editor::UnfoldLines",

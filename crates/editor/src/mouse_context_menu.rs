@@ -13,6 +13,7 @@ use std::ops::Range;
 use text::PointUtf16;
 use workspace::OpenInTerminal;
 use zed_actions::agent::AddSelectionToThread;
+use zed_actions::call_hierarchy::ShowCallHierarchy;
 use zed_actions::preview::{
     markdown::OpenPreview as OpenMarkdownPreview, svg::OpenPreview as OpenSvgPreview,
 };
@@ -262,6 +263,7 @@ pub fn deploy_context_menu(
                     "Find All References",
                     Box::new(FindAllReferences::default()),
                 )
+                .action("Show Call Hierarchy", Box::new(ShowCallHierarchy))
                 .separator()
                 .action("Rename Symbol", Box::new(Rename))
                 .action("Format Buffer", Box::new(Format))

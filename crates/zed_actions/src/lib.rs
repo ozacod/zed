@@ -243,6 +243,24 @@ pub mod workspace {
     );
 }
 
+pub mod call_hierarchy {
+    use gpui::actions;
+
+    actions!(
+        call_hierarchy,
+        [
+            /// Opens and focuses the call hierarchy tab.
+            ToggleFocus,
+            /// Shows call hierarchy for the symbol under cursor.
+            ShowCallHierarchy,
+            /// Shows incoming calls for the symbol under cursor.
+            ShowIncomingCalls,
+            /// Shows outgoing calls for the symbol under cursor.
+            ShowOutgoingCalls,
+        ]
+    );
+}
+
 pub mod git {
     use gpui::actions;
 

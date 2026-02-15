@@ -513,6 +513,7 @@
       "shift-f12": "editor::GoToImplementation",
       "alt-ctrl-f12": "editor::GoToTypeDefinitionSplit",
       "alt-shift-f12": "editor::FindAllReferences",
+      "alt-shift-h": "call_hierarchy::ShowCallHierarchy",
       "ctrl-m": "editor::MoveToEnclosingBracket", // from jetbrains
       "ctrl-|": "editor::MoveToEnclosingBracket",
       "ctrl-{": "editor::Fold",
