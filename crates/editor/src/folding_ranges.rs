@@ -671,6 +671,79 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_tree_sitter_import_folding_works_with_lsp_folding_enabled(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx, |_| {});
+
+        update_test_language_settings(cx, |settings| {
+            settings.defaults.document_folding_ranges = Some(DocumentFoldingRanges::On);
+        });
+
+        let mut cx = EditorLspTestContext::new_rust(
+            lsp::ServerCapabilities {
+                folding_range_provider: Some(lsp::FoldingRangeProviderCapability::Simple(true)),
+                ..lsp::ServerCapabilities::default()
+            },
+            cx,
+        )
+        .await;
+
+        let mut folding_request = cx
+            .set_request_handler::<lsp::request::FoldingRangeRequest, _, _>(
+                move |_, _, _| async move {
+                    Ok(Some(vec![FoldingRange {
+                        start_line: 3,
+                        start_character: Some(10),
+                        end_line: 5,
+                        end_character: Some(1),
+                        kind: None,
+                        collapsed_text: None,
+                    }]))
+                },
+            );
+
+        cx.set_state("ˇuse std::fmt;\nuse std::io;\n\nfn main() {\n    println!(\"hello\");\n}\n");
+        assert!(folding_request.next().await.is_some());
+        cx.run_until_parked();
+
+        cx.editor.read_with(&cx.cx.cx, |editor, cx| {
+            assert!(
+                editor.document_folding_ranges_enabled(cx),
+                "Expected LSP folding ranges to be active"
+            );
+        });
+
+        cx.update_editor(|editor, window, cx| {
+            editor.fold_at(MultiBufferRow(0), window, cx);
+        });
+        cx.update_editor(|editor, _window, cx| {
+            assert!(
+                editor
+                    .display_snapshot(cx)
+                    .is_line_folded(MultiBufferRow(0)),
+                "Tree-sitter import fold should be available at row 0"
+            );
+            assert_eq!(
+                editor.display_text(cx),
+                "use std::fmt;⋯\n\nfn main() {\n    println!(\"hello\");\n}\n",
+            );
+        });
+
+        cx.update_editor(|editor, window, cx| {
+            editor.fold_at(MultiBufferRow(3), window, cx);
+        });
+        cx.update_editor(|editor, _window, cx| {
+            assert!(
+                editor
+                    .display_snapshot(cx)
+                    .is_line_folded(MultiBufferRow(3)),
+                "LSP fold should still be available on function row"
+            );
+        });
+    }
+
+    #[gpui::test]
     async fn test_lsp_folding_ranges_collapsed_text(cx: &mut TestAppContext) {
         init_test(cx, |_| {});
 

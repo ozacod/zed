@@ -4938,6 +4938,46 @@ impl BufferSnapshot {
         })
     }
 
+    pub fn import_ranges<T: ToOffset>(
+        &self,
+        range: Range<T>,
+        options: TreeSitterOptions,
+    ) -> impl Iterator<Item = Range<usize>> + '_ {
+        let range =
+            range.start.to_previous_offset(self)..self.len().min(range.end.to_next_offset(self));
+
+        let mut matches =
+            self.syntax
+                .matches_with_options(range.clone(), &self.text, options, |grammar| {
+                    grammar.imports_config.as_ref().map(|config| &config.query)
+                });
+
+        let configs = matches
+            .grammars()
+            .iter()
+            .map(|grammar| grammar.imports_config.as_ref())
+            .collect::<Vec<_>>();
+
+        iter::from_fn(move || {
+            loop {
+                let mat = matches.peek()?;
+                let import_range = configs[mat.grammar_index].and_then(|config| {
+                    mat.captures
+                        .iter()
+                        .find(|capture| capture.index == config.import_ix)
+                        .map(|capture| capture.node.byte_range())
+                });
+                matches.advance();
+
+                if let Some(import_range) = import_range
+                    && import_range.overlaps(&range)
+                {
+                    return Some(import_range);
+                }
+            }
+        })
+    }
+
     /// Returns enclosing bracket ranges containing the given range
     pub fn enclosing_bracket_ranges<T: ToOffset>(
         &self,

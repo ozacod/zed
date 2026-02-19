@@ -97,7 +97,10 @@ use gpui::{
     App, Context, Entity, EntityId, Font, HighlightStyle, LineLayout, Pixels, UnderlineStyle,
     WeakEntity,
 };
-use language::{Point, Subscription as BufferSubscription, language_settings::language_settings};
+use language::{
+    Point, Subscription as BufferSubscription, TreeSitterOptions,
+    language_settings::language_settings,
+};
 use multi_buffer::{
     Anchor, AnchorRangeExt, ExcerptId, MultiBuffer, MultiBufferOffset, MultiBufferOffsetUtf16,
     MultiBufferPoint, MultiBufferRow, MultiBufferSnapshot, RowInfo, ToOffset, ToPoint,
@@ -2277,6 +2280,96 @@ impl DisplaySnapshot {
             .unwrap_or(false)
     }
 
+    pub(crate) fn tree_sitter_import_crease_for_buffer_row(
+        &self,
+        buffer_row: MultiBufferRow,
+    ) -> Option<Crease<Point>> {
+        let point = Point::new(buffer_row.0, 0);
+        let (buffer, _, excerpt_id) = self.buffer_snapshot().point_to_buffer_point(point)?;
+
+        let mut current_block_start = None;
+        let mut current_block_end: u32 = 0;
+
+        for range in buffer.import_ranges(0..buffer.len(), TreeSitterOptions::default()) {
+            let start_point = buffer.offset_to_point(range.start);
+            let mut end_point = buffer.offset_to_point(range.end);
+            if end_point.column == 0 && end_point.row > start_point.row {
+                end_point.row -= 1;
+            }
+
+            let import_start_row = start_point.row;
+            let import_end_row = end_point.row;
+
+            match current_block_start {
+                Some(block_start_row) => {
+                    let is_adjacent = import_start_row <= current_block_end.saturating_add(1);
+                    let has_only_blank_lines_between = if is_adjacent {
+                        true
+                    } else {
+                        ((current_block_end + 1)..import_start_row)
+                            .all(|row| buffer.is_line_blank(row))
+                    };
+
+                    if has_only_blank_lines_between {
+                        current_block_end = current_block_end.max(import_end_row);
+                    } else {
+                        if let Some(crease) = self.tree_sitter_import_block_crease(
+                            excerpt_id,
+                            block_start_row,
+                            current_block_end,
+                            buffer_row.0,
+                        ) {
+                            return Some(crease);
+                        }
+                        current_block_start = Some(import_start_row);
+                        current_block_end = import_end_row;
+                    }
+                }
+                None => {
+                    current_block_start = Some(import_start_row);
+                    current_block_end = import_end_row;
+                }
+            }
+        }
+
+        self.tree_sitter_import_block_crease(
+            excerpt_id,
+            current_block_start?,
+            current_block_end,
+            buffer_row.0,
+        )
+    }
+
+    fn tree_sitter_import_block_crease(
+        &self,
+        excerpt_id: ExcerptId,
+        block_start_row: u32,
+        block_end_row: u32,
+        target_row: u32,
+    ) -> Option<Crease<Point>> {
+        if block_start_row != target_row || block_end_row <= block_start_row {
+            return None;
+        }
+
+        let snapshot = self.buffer_snapshot();
+        let (buffer, _) = snapshot.buffer_line_for_row(MultiBufferRow(target_row))?;
+        let start = Point::new(block_start_row, buffer.line_len(block_start_row));
+        let end = Point::new(block_end_row, buffer.line_len(block_end_row));
+        let start = buffer.anchor_before(start);
+        let end = buffer.anchor_before(end);
+        let range = snapshot
+            .anchor_range_in_excerpt(excerpt_id, start..end)?
+            .to_point(snapshot);
+
+        Some(Crease::Inline {
+            range,
+            placeholder: self.fold_placeholder.clone(),
+            render_toggle: None,
+            render_trailer: None,
+            metadata: None,
+        })
+    }
+
     #[instrument(skip_all)]
     pub fn crease_for_buffer_row(&self, buffer_row: MultiBufferRow) -> Option<Crease<Point>> {
         let start =
@@ -2315,6 +2408,8 @@ impl DisplaySnapshot {
                     render_toggle: render_toggle.clone(),
                 }),
             }
+        } else if let Some(crease) = self.tree_sitter_import_crease_for_buffer_row(buffer_row) {
+            Some(crease)
         } else if !self.use_lsp_folding_ranges
             && self.starts_indent(MultiBufferRow(start.row))
             && !self.is_line_folded(MultiBufferRow(start.row))
